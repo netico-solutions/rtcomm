@@ -72,10 +72,16 @@
         } while (0)
 
 
+struct ppbuff;
+
 struct rtcomm_state 
 {
         struct spi_transfer     spi_transfer;
         struct spi_message      spi_message;
+        struct spi_board_info   spi_board_info;
+        struct spi_device *     spi;
+        struct ppbuff *         ppbuff;
+        char                    notify_label[64];
         bool                    is_spi_locked;
         bool                    is_isr_init;
         bool                    is_gpio_init;
@@ -99,7 +105,7 @@ static void ppbuff_producer_done(struct ppbuff * ppbuff);
 static void * ppbuff_get_consumer_storage(struct ppbuff * ppbuff);
 static uint32_t ppbuff_size(struct ppbuff * ppbuff);
 
-/*--  Module parameters  ----------------------------------------------------*/
+/*--  Module parameters  -----------------------------------------------------*/
 static int g_bus_id = 1;
 module_param(g_bus_id, int, S_IRUGO);
 MODULE_PARM_DESC(g_bus_id, "SPI bus ID [1]");
@@ -133,10 +139,10 @@ static struct miscdevice        g_rtcomm_miscdev =
 };
 
 static struct rtcomm_state      g_rtcomm_state;
-static struct spi_device *      g_spi;
-static struct ppbuff *          g_ppbuff;
 
 
+
+/*--  PPBUF  -----------------------------------------------------------------*/
 
 static struct ppbuff * ppbuff_init(uint32_t size)
 {
@@ -225,7 +231,7 @@ static uint32_t ppbuff_size(struct ppbuff * ppbuff)
 static irqreturn_t trigger_notify_handler(int irq, void * p)
 {
         disable_irq_nosync(irq);
-        ppbuff_producer_done(g_ppbuff);
+        ppbuff_producer_done(g_rtcomm_state.ppbuff);
         enable_irq(irq);
 
         return (IRQ_HANDLED);
@@ -235,7 +241,6 @@ static irqreturn_t trigger_notify_handler(int irq, void * p)
 
 static int rtcomm_open(struct inode * inode, struct file * fd)
 {
-        char                    label[64];
         int                     ret;
         
         RTCOMM_NOT("open(): %d:%d\n", current->group_leader->pid, current->pid);
@@ -246,54 +251,55 @@ static int rtcomm_open(struct inode * inode, struct file * fd)
         g_rtcomm_state.is_busy = true;
         fd->private_data = &g_rtcomm_state;
         
-        g_spi->bits_per_word = 8;
-        g_spi->mode          = SPI_MODE_1;
-        g_spi->max_speed_hz  = 20000000ul;
-        ret = spi_setup(g_spi);
+        g_rtcomm_state.spi->bits_per_word = 8;
+        g_rtcomm_state.spi->mode          = SPI_MODE_1;
+        g_rtcomm_state.spi->max_speed_hz  = 20000000ul;
+        ret = spi_setup(g_rtcomm_state.spi);
             
         if (ret) {
                 RTCOMM_ERR("spi_setup() request failed: %d\n", ret);
                 
                 return (ret);
         }
-        spi_bus_lock(g_spi->master);
+        spi_bus_lock(g_rtcomm_state.spi->master);
         g_rtcomm_state.is_spi_locked = true;
-        g_ppbuff = ppbuff_init(g_buff_size);
+        g_rtcomm_state.ppbuff = ppbuff_init(g_buff_size);
         
-        if (g_ppbuff == NULL) {
-                RTCOMM_ERR("ppbuff_init() init failed: %d\n", ret);
-                spi_bus_unlock(g_spi->master);
-                
-                return (ret);
+        if (!g_rtcomm_state.ppbuff) {
+                RTCOMM_ERR("ppbuff_init() init failed.\n");
+                ret = -1;
+
+                goto FAIL_CREATE_PPBUFF;
         }
         ret = gpio_to_irq(g_notify);
         
         if (ret < 0) {
                 RTCOMM_ERR("NOTIFY gpio %d interrupt request mapping failed\n", g_notify);
                 
-                goto fail_gpio_isr_map_request;
+                goto FAIL_GPIO_ISR_MAP_REQUEST;
         }
-        sprintf(label, RTCOMM_NAME "-notify");
         ret = request_irq(
                         ret, 
                         &trigger_notify_handler, 
                         IRQF_TRIGGER_RISING, 
-                        label, 
+                        g_rtcomm_state.notify_label, 
                         NULL);
                         
         if (ret) {
-                RTCOMM_ERR("NOTIFY gpio %d interrupt request failed\n", g_notify);
+                RTCOMM_ERR("NOTIFY gpio %d interrupt request failed: %d\n", g_notify, ret);
                 
-                goto fail_gpio_isr_request;
+                goto FAIL_GPIO_ISR_REQUEST;
         }
         g_rtcomm_state.is_isr_init = true;
 
         return (0);
-fail_gpio_isr_request:        
-fail_gpio_isr_map_request:
-        ppbuff_term(g_ppbuff);
+FAIL_GPIO_ISR_REQUEST:        
+FAIL_GPIO_ISR_MAP_REQUEST:
+        ppbuff_term(g_rtcomm_state.ppbuff);
+FAIL_CREATE_PPBUFF:
         g_rtcomm_state.is_busy = false;
-        spi_bus_unlock(g_spi->master);
+        spi_bus_unlock(g_rtcomm_state.spi->master);
+        g_rtcomm_state.is_spi_locked = false;
         
         return (ret);
 }
@@ -310,8 +316,8 @@ static int rtcomm_release(struct inode * inode, struct file * fd)
         }
         disable_irq_nosync(gpio_to_irq(g_notify));
         free_irq(gpio_to_irq(g_notify), NULL);
-        spi_bus_unlock(g_spi->master);
-        ppbuff_term(g_ppbuff);
+        spi_bus_unlock(g_rtcomm_state.spi->master);
+        ppbuff_term(g_rtcomm_state.ppbuff);
         g_rtcomm_state.is_spi_locked = false;
         g_rtcomm_state.is_isr_init   = false;
         g_rtcomm_state.is_busy       = false;
@@ -328,11 +334,11 @@ static ssize_t rtcomm_read(struct file * fd, char __user * buff,
 
         RTCOMM_DBG("read: requested size %d\n", byte_count);
 
-        if (byte_count > ppbuff_size(g_ppbuff)) {
-                byte_count = ppbuff_size(g_ppbuff);
+        if (byte_count > ppbuff_size(g_rtcomm_state.ppbuff)) {
+                byte_count = ppbuff_size(g_rtcomm_state.ppbuff);
         }
         RTCOMM_DBG("read: size %d\n", byte_count);
-        storage = ppbuff_get_consumer_storage(g_ppbuff);
+        storage = ppbuff_get_consumer_storage(g_rtcomm_state.ppbuff);
         
         if (!storage) {
             return (-ENOMEM);
@@ -345,13 +351,13 @@ static ssize_t rtcomm_read(struct file * fd, char __user * buff,
         spi_message_add_tail(&g_rtcomm_state.spi_transfer, &g_rtcomm_state.spi_message);
         g_rtcomm_state.spi_message.complete = NULL;
         g_rtcomm_state.spi_message.context  = NULL;
-        spi_sync_locked(g_spi, &g_rtcomm_state.spi_message);
+        spi_sync_locked(g_rtcomm_state.spi, &g_rtcomm_state.spi_message);
         RTCOMM_DBG("read copy: size: %d\n", byte_count);
         
         if (copy_to_user(buff, storage, byte_count)) {
             return (-EFAULT);
         }
-        ppbuff_consumer_done(g_ppbuff);
+        ppbuff_consumer_done(g_rtcomm_state.ppbuff);
         *off += byte_count;
         
         return (byte_count);
@@ -361,16 +367,12 @@ static ssize_t rtcomm_read(struct file * fd, char __user * buff,
 
 static int __init rtcomm_init(void)
 {
-        static char             label[64];
         int                     ret;
         struct spi_master *     master;
-        struct spi_board_info   rtcomm_device_info;
         
-        memset(&rtcomm_device_info, 0, sizeof(rtcomm_device_info));
-        strncpy(&rtcomm_device_info.modalias[0], RTCOMM_NAME, SPI_NAME_SIZE);
-        //       rtcomm_device_info.modalias     = RTCOMM_NAME;
-        rtcomm_device_info.max_speed_hz = 40000000ul;
-        rtcomm_device_info.bus_num      = g_bus_id;
+        strncpy(&g_rtcomm_state.spi_board_info.modalias[0], RTCOMM_NAME, SPI_NAME_SIZE);
+        g_rtcomm_state.spi_board_info.max_speed_hz = 40000000ul;
+        g_rtcomm_state.spi_board_info.bus_num      = g_bus_id;
         
         RTCOMM_NOT("registering RTCOMM device driver " RTCOMM_BUILD_VER "\n");
         RTCOMM_NOT("BUILD: " RTCOMM_BUILD_DATE " : " RTCOMM_BUILD_TIME "\n");
@@ -382,21 +384,21 @@ static int __init rtcomm_init(void)
 
                 return (-ENODEV);
         }
-        g_spi = spi_new_device(master, &rtcomm_device_info);
+        g_rtcomm_state.spi = spi_new_device(master, &g_rtcomm_state.spi_board_info);
 
-        if (!g_spi) {
+        if (!g_rtcomm_state.spi) {
                 RTCOMM_ERR("could not create SPI device\n");
 
                 return (-ENODEV);
         }
-        sprintf(label, RTCOMM_NAME "-notify");
-        RTCOMM_INF("gpio name: %s\n", label);
-        ret = gpio_request_one(g_notify, GPIOF_DIR_IN, label);
+        sprintf(&g_rtcomm_state.notify_label[0], RTCOMM_NAME "-notify");
+        RTCOMM_INF("gpio name: %s\n", g_rtcomm_state.notify_label);
+        ret = gpio_request_one(g_notify, GPIOF_DIR_IN, g_rtcomm_state.notify_label);
         
         if (ret) {
                 RTCOMM_ERR("NOTIFY gpio %d request failed\n", g_notify);
 
-                goto fail_gpio_request;
+                goto FAIL_GPIO_REQUEST;
         }
         g_rtcomm_state.is_isr_init   = false;
         g_rtcomm_state.is_spi_locked = false;
@@ -406,8 +408,9 @@ static int __init rtcomm_init(void)
         ret = misc_register(&g_rtcomm_miscdev);
         
         return (ret);
-fail_gpio_request:
-        spi_unregister_device(g_spi);
+
+FAIL_GPIO_REQUEST:
+        spi_unregister_device(g_rtcomm_state.spi);
 
         return (ret);
 }
@@ -427,12 +430,12 @@ static void __exit rtcomm_exit(void)
                 gpio_free(g_notify);
         }
         
-        if (g_spi) {
+        if (g_rtcomm_state.spi) {
         
                 if (g_rtcomm_state.is_spi_locked) {
-                        spi_bus_unlock(g_spi->master);
+                        spi_bus_unlock(g_rtcomm_state.spi->master);
                 }
-                spi_unregister_device(g_spi);
+                spi_unregister_device(g_rtcomm_state.spi);
         }
         misc_deregister(&g_rtcomm_miscdev);
 }
