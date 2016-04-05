@@ -332,16 +332,27 @@ static ssize_t rtcomm_read(struct file * fd, char __user * buff,
 {
         void *                  storage;
 
+        /* NOTE:
+         * Always set offset to zero. This driver does not utilize offset 
+         * counter.
+         */
+        *off = 0;
+
         RTCOMM_DBG("read: requested size %d\n", byte_count);
 
-        if (byte_count > ppbuff_size(g_rtcomm_state.ppbuff)) {
-                byte_count = ppbuff_size(g_rtcomm_state.ppbuff);
+        if (byte_count != ppbuff_size(g_rtcomm_state.ppbuff)) {
+                RTCOMM_ERR("read(): invalid byte_count: %d, expected: %d\n", 
+                        byte_count, ppbuff_size(g_rtcomm_state.ppbuff));
+                
+                return (-EINVAL);
         }
         RTCOMM_DBG("read: size %d\n", byte_count);
         storage = ppbuff_get_consumer_storage(g_rtcomm_state.ppbuff);
         
         if (!storage) {
-            return (-ENOMEM);
+                RTCOMM_ERR("read(): failed to get data storage\n");
+
+                return (-ENOMEM);
         }
         memset(&g_rtcomm_state.spi_transfer, 0, sizeof(g_rtcomm_state.spi_transfer));
         g_rtcomm_state.spi_transfer.rx_buf = storage;
@@ -349,8 +360,6 @@ static ssize_t rtcomm_read(struct file * fd, char __user * buff,
         
         spi_message_init(&g_rtcomm_state.spi_message);
         spi_message_add_tail(&g_rtcomm_state.spi_transfer, &g_rtcomm_state.spi_message);
-        g_rtcomm_state.spi_message.complete = NULL;
-        g_rtcomm_state.spi_message.context  = NULL;
         spi_sync_locked(g_rtcomm_state.spi, &g_rtcomm_state.spi_message);
         RTCOMM_DBG("read copy: size: %d\n", byte_count);
         
@@ -358,7 +367,6 @@ static ssize_t rtcomm_read(struct file * fd, char __user * buff,
             return (-EFAULT);
         }
         ppbuff_consumer_done(g_rtcomm_state.ppbuff);
-        *off += byte_count;
         
         return (byte_count);
 }
