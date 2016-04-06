@@ -41,7 +41,7 @@
 
 #define RTCOMM_INF(msg, ...)                                                    \
         do {                                                                    \
-                if (g_arg_log_level >= LOG_LEVEL_INF) {                             \
+                if (g_rtcomm_config.log_level >= LOG_LEVEL_INF) {                             \
                         printk(KERN_INFO RTCOMM_NAME " info: " msg,             \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -49,7 +49,7 @@
 
 #define RTCOMM_NOT(msg, ...)                                                    \
         do {                                                                    \
-                if (g_arg_log_level >= LOG_LEVEL_NOT) {                             \
+                if (g_rtcomm_config.log_level >= LOG_LEVEL_NOT) {                             \
                         printk(KERN_NOTICE  RTCOMM_NAME ": " msg,               \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -57,7 +57,7 @@
 
 #define RTCOMM_WRN(msg, ...)                                                    \
         do {                                                                    \
-                if (g_arg_log_level >= LOG_LEVEL_WRN) {                             \
+                if (g_rtcomm_config.log_level >= LOG_LEVEL_WRN) {                             \
                         printk(KERN_WARNING RTCOMM_NAME " warning: " msg,       \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -65,7 +65,7 @@
 
 #define RTCOMM_DBG(msg, ...)                                                    \
         do {                                                                    \
-                if (g_arg_log_level >= LOG_LEVEL_DBG) {                             \
+                if (g_rtcomm_config.log_level >= LOG_LEVEL_DBG) {                             \
                         printk(KERN_DEFAULT RTCOMM_NAME " debug: " msg,         \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -154,6 +154,18 @@ static struct rtcomm_config     g_rtcomm_config;
 
 
 /*--  Driver configuration  --------------------------------------------------*/
+
+
+
+static void init_configuration(struct rtcomm_config * config)
+{
+        config->log_level = g_arg_log_level;
+        config->notify_pin_id = g_arg_notify_pin_id;
+        config->spi_bus_id = g_arg_bus_id;
+        config->spi_bus_speed = 20000000ul;
+        config->buffer_size_bytes = g_arg_buffer_size_bytes;
+}
+
 
 /*--  Misc  ------------------------------------------------------------------*/
 
@@ -303,7 +315,7 @@ static int rtcomm_open(struct inode * inode, struct file * fd)
 
                 goto FAIL_CREATE_PPBUFF;
         }
-        ret = gpio_to_irq(g_arg_notify_pin_id);
+        ret = gpio_to_irq(config->notify_pin_id);
         
         if (ret < 0) {
                 RTCOMM_ERR("NOTIFY gpio %d interrupt request mapping failed\n", 
@@ -409,15 +421,6 @@ static ssize_t rtcomm_read(struct file * fd, char __user * buff,
         return (byte_count);
 }
 
-static void init_configuration(struct rtcomm_config * config)
-{
-        config->log_level = g_arg_log_level;
-        config->notify_pin_id = g_arg_notify_pin_id;
-        config->spi_bus_id = g_arg_bus_id;
-        config->spi_bus_speed = 20000000ul;
-        config->buffer_size_bytes = g_arg_buffer_size_bytes;
-}
-
 
 
 static int __init rtcomm_init(void)
@@ -435,10 +438,10 @@ static int __init rtcomm_init(void)
         strncpy(&state->spi_board_info.modalias[0], RTCOMM_NAME, SPI_NAME_SIZE);
         state->spi_board_info.max_speed_hz = config->spi_bus_speed;
         state->spi_board_info.bus_num      = config->spi_bus_id;
-        master = spi_busnum_to_master(g_arg_bus_id);
+        master = spi_busnum_to_master(config->spi_bus_id);
 
         if (!master) {
-                RTCOMM_ERR("invalid SPI bus id: %d\n", g_arg_bus_id);
+                RTCOMM_ERR("invalid SPI bus id: %d\n", config->spi_bus_id);
 
                 return (-ENODEV);
         }
@@ -480,16 +483,17 @@ FAIL_GPIO_REQUEST:
 static void __exit rtcomm_exit(void)
 {
         struct rtcomm_state *   state = &g_rtcomm_state;
+        struct rtcomm_config *  config = &g_rtcomm_config;
 
         RTCOMM_NOT("deregistering\n");
 
         if (state->is_isr_init) {
-                disable_irq_nosync(gpio_to_irq(g_arg_notify_pin_id));
-                free_irq(gpio_to_irq(g_arg_notify_pin_id), NULL);
+                disable_irq_nosync(gpio_to_irq(config->notify_pin_id));
+                free_irq(gpio_to_irq(config->notify_pin_id), NULL);
         }
         
         if (state->is_gpio_init) {
-                gpio_free(g_arg_notify_pin_id);
+                gpio_free(config->notify_pin_id);
         }
         
         if (state->spi) {
