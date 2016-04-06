@@ -9,6 +9,9 @@ obj-m += rtcomm.o
 all:
 	make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -C $(LINUX_SRC) M=$(PWD) modules
 
+clean:
+	make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -C $(LINUX_SRC) M=$(PWD) clean
+
 ifndef LINUX_SRC
 	$(error LINUX_SRC variable is not set)
 endif
