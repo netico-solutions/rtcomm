@@ -46,7 +46,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_INF(msg, ...)                                                    \
 do {                                                                    \
-        if (g_rtcomm_config.log_level >= LOG_LEVEL_INF) {               \
+        if (g_state.config.log_level >= LOG_LEVEL_INF) {               \
                 printk(KERN_INFO RTCOMM_NAME " info: " msg,             \
                         ## __VA_ARGS__);                                \
         }                                                               \
@@ -54,7 +54,7 @@ do {                                                                    \
 
 #define RTCOMM_NOT(msg, ...)                                                    \
 do {                                                                    \
-        if (g_rtcomm_config.log_level >= LOG_LEVEL_NOT) {               \
+        if (g_state.config.log_level >= LOG_LEVEL_NOT) {               \
                 printk(KERN_NOTICE  RTCOMM_NAME ": " msg,               \
                         ## __VA_ARGS__);                                \
         }                                                               \
@@ -62,7 +62,7 @@ do {                                                                    \
 
 #define RTCOMM_WRN(msg, ...)                                                    \
 do {                                                                    \
-        if (g_rtcomm_config.log_level >= LOG_LEVEL_WRN) {               \
+        if (g_state.config.log_level >= LOG_LEVEL_WRN) {               \
                 printk(KERN_WARNING RTCOMM_NAME " warning: " msg,       \
                         ## __VA_ARGS__);                                \
         }                                                               \
@@ -70,7 +70,7 @@ do {                                                                    \
 
 #define RTCOMM_DBG(msg, ...)                                                    \
         do {                                                                    \
-                if (g_rtcomm_config.log_level >= LOG_LEVEL_DBG) {               \
+                if (g_state.config.log_level >= LOG_LEVEL_DBG) {               \
                         printk(KERN_DEFAULT RTCOMM_NAME " debug: " msg,         \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -97,19 +97,21 @@ struct rtcomm_state
         struct spi_board_info   spi_board_info;
         struct spi_device *     spi;
         struct fifo_buff *      fifo_buff;
-        struct task_struct *    fifo_consumer;
-        struct complete         isr_signal;
-        struct complete         thread_shutdown;
+        struct task_struct *    thread_consumer;
+        struct completion       isr_signal;
+        struct completion       thread_shutdown;
         struct rtcomm_config    config;
         char                    notify_label[64];
         bool                    is_busy;
+        bool                    is_initialized;
+        bool                    is_running;
 };
 
 
 struct fifo_buff
 {
-        struct completion       wait;
-        bool                    should_exit;
+        struct completion       put;
+        struct completion       get;
         uint32_t                size;
         void *                  buffer;
 };
@@ -119,14 +121,17 @@ static int rtcomm_release(struct inode * inode, struct file * fd);
 static ssize_t rtcomm_read(struct file * fd, char __user *, size_t, loff_t *);
 static long rtcomm_ioctl(struct file *, unsigned int, unsigned long);
 
+static irqreturn_t trigger_notify_handler(int irq, void * p);
+
 static struct fifo_buff * fifo_buff_init(uint32_t size);
 static void fifo_buff_term(struct fifo_buff * fifo_buff);
 static void * fifo_buff_create(struct fifo_buff * fifo_buff);
 static void fifo_buff_delete(struct fifo_buff * fifo_buff, void * storage);
 static void * fifo_buff_get(struct fifo_buff * fifo_buff);
+static void fifo_buff_put(struct fifo_buff * fifo_buff, void * storage);
 static uint32_t fifo_buff_size(struct fifo_buff * fifo_buff);
 
-
+static int thread_fifo_consumer(void * data);
 
 /*--  Module parameters  -----------------------------------------------------*/
 static int g_arg_bus_id = -1;
@@ -152,6 +157,7 @@ static const struct file_operations g_rtcomm_fops =
         .open           = rtcomm_open,
         .release        = rtcomm_release,
         .read           = rtcomm_read,
+        .unlocked_ioctl = rtcomm_ioctl
 };
 
 static struct miscdevice        g_rtcomm_miscdev = 
@@ -161,7 +167,7 @@ static struct miscdevice        g_rtcomm_miscdev =
         &g_rtcomm_fops
 };
 
-static struct rtcomm_state      g_rtcomm_state;
+static struct rtcomm_state      g_state;
 static struct rtcomm_config     g_pending_config;
 
 
@@ -175,13 +181,6 @@ static void config_init_pending(void)
         g_pending_config.spi_bus_speed          = 20000000ul;
         g_pending_config.buffer_size_bytes      = g_arg_buffer_size_bytes;
 }
-
-static void config_set_buffer_size_bytes(struct rtcomm_config * config, 
-                int bytes)
-{
-        config->buffer_size_bytes = bytes;
-}
-
 
 /*--  Misc  ------------------------------------------------------------------*/
 
@@ -210,9 +209,9 @@ static int init_sampling(struct rtcomm_state * state, const struct rtcomm_config
          */
         state->spi_board_info.max_speed_hz = config->spi_bus_speed;
         state->spi_board_info.bus_num      = config->spi_bus_id;
-        state->master = spi_busnum_to_master(config->spi_bus_id);
+        master = spi_busnum_to_master(config->spi_bus_id);
 
-        if (!spi->master) {
+        if (!master) {
                 RTCOMM_ERR("invalid SPI bus id: %d\n", config->spi_bus_id);
                 ret = -ENODEV;
 
@@ -255,14 +254,6 @@ static int init_sampling(struct rtcomm_state * state, const struct rtcomm_config
                 
                 goto FAIL_GPIO_REQUEST;
         }
-        ret = gpio_to_irq(config->notify_pin_id);
-        
-        if (ret < 0) {
-                RTCOMM_ERR("NOTIFY gpio %d interrupt request mapping failed\n", 
-                        config->notify_pin_id);
-                
-                goto FAIL_GPIO_ISR_MAP_REQUEST;
-        }
         /*
          * Setup FIFO buffer
          */
@@ -274,12 +265,42 @@ static int init_sampling(struct rtcomm_state * state, const struct rtcomm_config
 
                 goto FAIL_CREATE_PPBUFF;
         }
-
-
-        init_complete(&state->isr_wait);
+        
+        /*
+         * Check GPIO IRQ
+         */
+        ret = gpio_to_irq(config->notify_pin_id);
+        
+        if (ret < 0) {
+                RTCOMM_ERR("NOTIFY gpio %d interrupt request mapping failed\n", 
+                        config->notify_pin_id);
+                ret = -ENODEV;
+                
+                goto FAIL_GPIO_ISR_MAP_REQUEST;
+        }
+        
+        /*
+         * Create consumer thread
+         */
+        state->thread_consumer = kthread_create(thread_fifo_consumer, state, 
+                        "rtcomm_fifo_consumer");
+                        
+        if (IS_ERR(state->thread_consumer)) {
+                RTCOMM_ERR("can't create thread_consumer");
+                ret = -ENOMEM;
+                
+                goto FAIL_CREATE_THREAD;
+        }
+        init_completion(&state->isr_signal);
+        init_completion(&state->thread_shutdown);
+        state->config = *config;
+        state->is_initialized = true;
         
         return (0);
         
+FAIL_CREATE_THREAD:
+FAIL_GPIO_ISR_MAP_REQUEST:
+        fifo_buff_term(state->fifo_buff);
 FAIL_CREATE_PPBUFF:
         gpio_free(config->notify_pin_id);
 FAIL_GPIO_REQUEST:
@@ -293,12 +314,68 @@ FAIL_MASTER:
 
 
 
+static int term_sampling(struct rtcomm_state * state) 
+{
+        if (state->is_initialized) {
+                state->is_initialized = false;        
+                fifo_buff_term(state->fifo_buff);
+                gpio_free(state->config.notify_pin_id);
+                spi_unregister_device(state->spi);
+        }
+        
+        return (0);
+}
+
+
+
 static int start_sampling(struct rtcomm_state * state)
 {
+        int                     ret;
+        
         spi_bus_lock(state->spi->master);
-        state->is_spi_locked = true;
+        init_completion(&state->isr_signal);
+        init_completion(&state->thread_shutdown);
+        
+        ret = request_irq(
+                        gpio_to_irq(state->config.notify_pin_id), 
+                        &trigger_notify_handler, 
+                        IRQF_TRIGGER_RISING, 
+                        state->notify_label, 
+                        NULL);
+                        
+        if (ret) {
+                RTCOMM_ERR("NOTIFY gpio %d interrupt request failed: %d\n", 
+                        state->config.notify_pin_id, ret);
+                ret = -ENODEV;
+                
+                goto FAIL_GPIO_ISR_REQUEST;
+        }
+        wake_up_process(state->thread_consumer);
+        state->is_running = true;
 
-        return (0)
+        return (0);
+        
+FAIL_GPIO_ISR_REQUEST:
+        spi_bus_unlock(state->spi->master); 
+        
+        return (ret);
+}
+
+
+
+static int stop_sampling(struct rtcomm_state * state)
+{
+        if (state->is_running) {
+                state->is_running = false;
+                disable_irq_nosync(gpio_to_irq(state->config.notify_pin_id));
+                free_irq(gpio_to_irq(state->config.notify_pin_id), NULL);
+                kthread_stop(state->thread_consumer);
+                complete(&state->isr_signal);
+                wait_for_completion(&state->thread_shutdown);
+                spi_bus_unlock(state->spi->master);
+        }
+        
+        return (0);
 }
 
 /*--  FIFO consumer thread  --------------------------------------------------*/
@@ -308,12 +385,20 @@ static int thread_fifo_consumer(void * data)
         struct rtcomm_state *   state = data;
         struct spi_message      message;
         struct spi_transfer     transfer;
-
-        while (!kthread_should_stop()) {
+        
+        for (;;) {
                 void *          storage;
 
                 wait_for_completion(&state->isr_signal);
+                
+                if (kthread_should_stop()) {
+                    break;
+                }
                 storage = fifo_buff_create(state->fifo_buff);
+                
+                if (!storage) {
+                    continue;
+                }
                 memset(&transfer, 0, sizeof(transfer));
                 transfer.rx_buf = storage;
                 transfer.len    = fifo_buff_size(state->fifo_buff);
@@ -322,6 +407,8 @@ static int thread_fifo_consumer(void * data)
                 spi_sync_locked(state->spi, &message);
                 fifo_buff_put(state->fifo_buff, storage);
         }
+        complete(&state->thread_shutdown);
+        
         return (0);
 }
 
@@ -339,9 +426,9 @@ static struct fifo_buff * fifo_buff_init(uint32_t size)
 
                 return (NULL);
         }
-        init_completion(&fifo->wait);
+        init_completion(&fifo_buff->put);
+        init_completion(&fifo_buff->get);
         fifo_buff->size         = size;
-        fifo_buff->should_exit  = false;
         fifo_buff->buffer       = kmalloc(size, GFP_DMA | GFP_KERNEL);
         RTCOMM_DBG("storage fifo_buff: %p\n", fifo_buff->buffer);
 
@@ -351,24 +438,15 @@ static struct fifo_buff * fifo_buff_init(uint32_t size)
 
                 return (NULL);
         }
+        complete(&fifo_buff->get);
         
         return (fifo_buff);
 }
 
 
 
-static void fifo_buff_pend_term(struct fifo_buff * fifo_buff)
-{
-        fifo_buff->should_exit = true;
-        complete(&fifo_buff->wait);
-}
-
-
-
 static void fifo_buff_term(struct fifo_buff * fifo_buff)
 {
-        RTCOMM_DBG("term fifo_buff: %p\n", fifo_buff);
-
         if (fifo_buff) {
                 kfree(fifo_buff->buffer);
                 kfree(fifo_buff);
@@ -377,36 +455,37 @@ static void fifo_buff_term(struct fifo_buff * fifo_buff)
 
 
 
-static void ppbuff_producer_done(struct fifo_buff * fifo_buff)
+static void * fifo_buff_create(struct fifo_buff * fifo_buff)
 {
-        RTCOMM_DBG("done fifo_buff\n");
-
-        fifo_buff->count = 1;
-        wake_up_interruptible(&fifo_buff->wait);
+        if (try_wait_for_completion(&fifo_buff->get)) {
+            reinit_completion(&fifo_buff->get);
+            
+            return (fifo_buff->buffer);
+        } else {
+            return (NULL);
+        }
 }
 
-
-
-static void fifo_buff_delete(struct fifo_buff * fifo_buff)
+static void fifo_buff_delete(struct fifo_buff * fifo_buff, void * storage)
 {
-        fifo_buff->count = 0;
+        complete(&fifo_buff->get);
 }
 
 
 
 static void * fifo_buff_get(struct fifo_buff * fifo_buff)
 {
-        if (wait_event_interruptible(fifo_buff->wait, fifo_buff->count != 0) == 0)
-        {
-                return (fifo_buff->buffer);
-        } 
-        else 
-        {
-                /*
-                 * In case we are interrupted return NULL pointer
-                 */
-                return (NULL);
-        }
+        wait_for_completion(&fifo_buff->put);
+        reinit_completion(&fifo_buff->put);
+
+        return (fifo_buff->buffer);
+}
+
+
+
+static void fifo_buff_put(struct fifo_buff * fifo_buff, void * storage)
+{
+        complete(&fifo_buff->put);
 }
 
 
@@ -423,11 +502,9 @@ static uint32_t fifo_buff_size(struct fifo_buff * fifo_buff)
 
 static irqreturn_t trigger_notify_handler(int irq, void * p)
 {
-        struct rtcomm_state *   state = &g_rtcomm_state;
+        struct rtcomm_state *   state = &g_state;
 
-        disable_irq_nosync(irq);
-        ppbuff_producer_done(state->fifo_buff);
-        enable_irq(irq);
+        complete(&state->isr_signal);
 
         return (IRQ_HANDLED);
 }
@@ -450,14 +527,8 @@ static ssize_t rtcomm_read(struct file * fd, char __user * buff,
          */
         *off = 0;
 
-        RTCOMM_DBG("read: requested size %d\n", byte_count);
-
-        if (byte_count != fifo_buff_size(state->fifo_buff)) {
-                RTCOMM_ERR("read(): invalid byte_count: %d, expected: %d\n", 
-                        byte_count, fifo_buff_size(state->fifo_buff));
-                retval = -EINVAL;
-
-                goto FAIL_INVALID_BYTE_COUNT;
+        if (!state->is_running) {
+                return (-ENODEV);
         }
         storage = fifo_buff_get(state->fifo_buff);
         
@@ -480,7 +551,6 @@ static ssize_t rtcomm_read(struct file * fd, char __user * buff,
 FAIL_COPY_TO_USER:
         fifo_buff_delete(state->fifo_buff, storage);
 FAIL_GET_STORAGE:
-FAIL_INVALID_BYTE_COUNT:
 
         return (retval);
 }
@@ -489,74 +559,18 @@ FAIL_INVALID_BYTE_COUNT:
 
 static int rtcomm_open(struct inode * inode, struct file * fd)
 {
-        struct rtcomm_state *   state = state_from_fd(fd);
-        struct rtcomm_config *  config = &g_rtcomm_config;
-        int                     ret;
+        struct rtcomm_state *   state = &g_state;
         
         RTCOMM_NOT("open(): %d:%d\n", current->group_leader->pid, current->pid);
         
-        state_to_fd(fd, &g_rtcomm_state);
+        state_to_fd(fd, state);
 
         if (state->is_busy) {
                 return (-EBUSY);
         }
         state->is_busy = true;
-        
-        state->spi->bits_per_word = 8;
-        state->spi->mode          = SPI_MODE_1;
-        state->spi->max_speed_hz  = config->spi_bus_speed;
-        ret = spi_setup(state->spi);
-            
-        if (ret) {
-                RTCOMM_ERR("spi_setup() request failed: %d\n", ret);
-                
-                return (ret);
-        }
-        spi_bus_lock(state->spi->master);
-        state->is_spi_locked = true;
-        state->fifo_buff = fifo_buff_init(config->buffer_size_bytes);
-        
-        if (!state->fifo_buff) {
-                RTCOMM_ERR("fifo_buff_init() init failed.\n");
-                ret = -1;
-
-                goto FAIL_CREATE_PPBUFF;
-        }
-        ret = gpio_to_irq(config->notify_pin_id);
-        
-        if (ret < 0) {
-                RTCOMM_ERR("NOTIFY gpio %d interrupt request mapping failed\n", 
-                        config->notify_pin_id);
-                
-                goto FAIL_GPIO_ISR_MAP_REQUEST;
-        }
-
-        init_complete(&state->isr_wait);
-        ret = request_irq(
-                        ret, 
-                        &trigger_notify_handler, 
-                        IRQF_TRIGGER_RISING, 
-                        state->notify_label, 
-                        NULL);
-                        
-        if (ret) {
-                RTCOMM_ERR("NOTIFY gpio %d interrupt request failed: %d\n", 
-                        config->notify_pin_id, ret);
-                
-                goto FAIL_GPIO_ISR_REQUEST;
-        }
-        state->is_isr_enabled = true;
 
         return (0);
-FAIL_GPIO_ISR_REQUEST:        
-FAIL_GPIO_ISR_MAP_REQUEST:
-        fifo_buff_term(state->fifo_buff);
-FAIL_CREATE_PPBUFF:
-        state->is_busy = false;
-        spi_bus_unlock(state->spi->master);
-        state->is_spi_locked = false;
-        
-        return (ret);
 }
 
 
@@ -564,21 +578,13 @@ FAIL_CREATE_PPBUFF:
 static int rtcomm_release(struct inode * inode, struct file * fd)
 {
         struct rtcomm_state *   state = state_from_fd(fd);
-        struct rtcomm_config *  config = &g_rtcomm_config;
 
         RTCOMM_NOT("close(): %d:%d\n", current->group_leader->pid, 
                         current->pid);
 
-        if (!state->is_busy) {
-                return (-EINVAL);
-        }
-        disable_irq_nosync(gpio_to_irq(config->notify_pin_id));
-        free_irq(gpio_to_irq(config->notify_pin_id), NULL);
-        spi_bus_unlock(state->spi->master);
-        fifo_buff_term(state->fifo_buff);
-        state->is_spi_locked = false;
-        state->is_isr_enabled   = false;
-        state->is_busy       = false;
+        stop_sampling(state);
+        term_sampling(state);
+        state->is_busy = false;
 
         return (0);
 }
@@ -589,7 +595,6 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
 {
         long                    retval;
         struct rtcomm_state *   state  = state_from_fd(fd);
-        struct rtcomm_config *  config = &g_rtcomm_config;
 
         retval = 0;
 
@@ -600,6 +605,7 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
 
                         if (retval) {
                                 retval = -EINVAL;
+                                break;
                         }
                         break;
                 }
@@ -618,14 +624,30 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
                                 retval = -EINVAL;
                                 break;
                         }
-                        configuration_set_buffer_size_bytes(config, bytes);
+                        g_pending_config.buffer_size_bytes = bytes;
                         break;
                 }
                 case RTCOMM_START: {
-
+                        int     ret;
+                        
+                        ret = init_sampling(state, &g_pending_config);
+                        
+                        if (ret) {
+                                retval = -EINVAL;
+                                break;
+                        }
+                        
+                        ret = start_sampling(state);
+                        
+                        if (ret) {
+                                retval = -EINVAL;
+                                break;
+                        }
                         break;
                 }
                 case RTCOMM_STOP: {
+                        stop_sampling(state);
+                        term_sampling(state);
                         break;
                 }
                 default : {
@@ -666,21 +688,8 @@ FAIL_REGISTER_MISC:
 
 static void __exit rtcomm_exit(void)
 {
-        struct rtcomm_state *   state = &g_rtcomm_state;
-        struct rtcomm_config *  config = &g_rtcomm_config;
-
         RTCOMM_NOT("deregistering\n");
 
-        if (state->is_isr_enabled) {
-                disable_irq_nosync(gpio_to_irq(config->notify_pin_id));
-                free_irq(gpio_to_irq(config->notify_pin_id), NULL);
-        }
-        gpio_free(config->notify_pin_id);
-
-        if (state->is_spi_locked) {
-                spi_bus_unlock(state->spi->master);
-        }
-        spi_unregister_device(state->spi);
         misc_deregister(&g_rtcomm_miscdev);
 }
 
