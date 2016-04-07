@@ -81,8 +81,7 @@ struct rtcomm_state
         struct spi_device *     spi;
         struct fifo_buff *      fifo_buff;
         struct task_struct *    fifo_consumer;
-        wait_queue_head_t *     isr_wait;
-        bool                    isr_has_signaled;
+        struct complete         isr_signal;
         char                    notify_label[64];
         bool                    is_spi_locked;
         bool                    is_isr_init;
