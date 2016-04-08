@@ -28,7 +28,6 @@
 
 #include "rtcomm.h"
 
-#define RTCOMM_NAME                     "rtcomm"
 #define RTCOMM_LOG_LEVEL                LOG_LEVEL_WRN
 #define RTCOMM_BUILD_TIME               "12:00"
 #define RTCOMM_BUILD_DATE               "2016-04-05"
@@ -45,32 +44,32 @@
 printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);    
 
 #define RTCOMM_INF(msg, ...)                                                    \
-do {                                                                    \
-        if (g_state.config.log_level >= LOG_LEVEL_INF) {               \
-                printk(KERN_INFO RTCOMM_NAME " info: " msg,             \
-                        ## __VA_ARGS__);                                \
-        }                                                               \
-} while (0)
+        do {                                                                    \
+                if (g_state.config.log_level >= LOG_LEVEL_INF) {                \
+                        printk(KERN_INFO RTCOMM_NAME " info: " msg,             \
+                                ## __VA_ARGS__);                                \
+                }                                                               \
+        } while (0)
 
 #define RTCOMM_NOT(msg, ...)                                                    \
-do {                                                                    \
-        if (g_state.config.log_level >= LOG_LEVEL_NOT) {               \
-                printk(KERN_NOTICE  RTCOMM_NAME ": " msg,               \
-                        ## __VA_ARGS__);                                \
-        }                                                               \
-} while (0)
+        do {                                                                    \
+                if (g_state.config.log_level >= LOG_LEVEL_NOT) {                \
+                        printk(KERN_NOTICE  RTCOMM_NAME ": " msg,               \
+                                ## __VA_ARGS__);                                \
+                }                                                               \
+        } while (0)
 
 #define RTCOMM_WRN(msg, ...)                                                    \
-do {                                                                    \
-        if (g_state.config.log_level >= LOG_LEVEL_WRN) {               \
-                printk(KERN_WARNING RTCOMM_NAME " warning: " msg,       \
-                        ## __VA_ARGS__);                                \
-        }                                                               \
-} while (0)
+        do {                                                                    \
+                if (g_state.config.log_level >= LOG_LEVEL_WRN) {                \
+                        printk(KERN_WARNING RTCOMM_NAME " warning: " msg,       \
+                                ## __VA_ARGS__);                                \
+                }                                                               \
+        } while (0)
 
 #define RTCOMM_DBG(msg, ...)                                                    \
         do {                                                                    \
-                if (g_state.config.log_level >= LOG_LEVEL_DBG) {               \
+                if (g_state.config.log_level >= LOG_LEVEL_DBG) {                \
                         printk(KERN_DEFAULT RTCOMM_NAME " debug: " msg,         \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -106,6 +105,7 @@ struct rtcomm_state
         bool                    is_initialized;
         bool                    is_running;
 };
+
 
 
 struct fifo_buff
@@ -151,6 +151,7 @@ module_param(g_arg_log_level, int, S_IRUGO);
 MODULE_PARM_DESC(g_arg_log_level, "log level [0 - 4]");
 
 
+
 static const struct file_operations g_rtcomm_fops = 
 {
         .owner          = THIS_MODULE,
@@ -184,29 +185,33 @@ static void config_init_pending(void)
 
 /*--  Misc  ------------------------------------------------------------------*/
 
+
+
 static struct rtcomm_state * state_from_fd(struct file * fd)
 {
-    return (fd->private_data);
+        return (fd->private_data);
 }
 
 
 
 static void state_to_fd(struct file * fd, struct rtcomm_state * state)
 {
-    fd->private_data = state;
+        fd->private_data = state;
 }
 
 
-static int init_sampling(struct rtcomm_state * state, const struct rtcomm_config * config)
+
+static int init_sampling(struct rtcomm_state * state, 
+                const struct rtcomm_config * config)
 {
         int                     ret;
         struct spi_master *     master;
         
-        strncpy(&state->spi_board_info.modalias[0], RTCOMM_NAME, SPI_NAME_SIZE);
-        
         /* 
          * Get SPI bus ID
          */
+        RTCOMM_DBG("get SPI bus ID");
+        strncpy(&state->spi_board_info.modalias[0], RTCOMM_NAME, SPI_NAME_SIZE);
         state->spi_board_info.max_speed_hz = config->spi_bus_speed;
         state->spi_board_info.bus_num      = config->spi_bus_id;
         master = spi_busnum_to_master(config->spi_bus_id);
@@ -217,9 +222,11 @@ static int init_sampling(struct rtcomm_state * state, const struct rtcomm_config
 
                 goto FAIL_MASTER;
         }
+
         /*
          * Setup SPI device
          */
+        RTCOMM_DBG("setup SPI device");
         state->spi = spi_new_device(master, &state->spi_board_info);
 
         if (!state->spi) {
@@ -239,9 +246,11 @@ static int init_sampling(struct rtcomm_state * state, const struct rtcomm_config
                 
                 goto FAIL_SPI_SETUP;
         }
+
         /*
          * Get GPIO pin
          */
+        RTCOMM_DBG("get GPIO pin");
         sprintf(&state->notify_label[0], RTCOMM_NAME "-notify");
         RTCOMM_INF("gpio name: %s\n", state->notify_label);
         ret = gpio_request_one(config->notify_pin_id, GPIOF_DIR_IN, 
@@ -254,9 +263,11 @@ static int init_sampling(struct rtcomm_state * state, const struct rtcomm_config
                 
                 goto FAIL_GPIO_REQUEST;
         }
+
         /*
          * Setup FIFO buffer
          */
+        RTCOMM_DBG("setup FIFO buffer");
         state->fifo_buff = fifo_buff_init(config->buffer_size_bytes);
         
         if (!state->fifo_buff) {
@@ -269,6 +280,7 @@ static int init_sampling(struct rtcomm_state * state, const struct rtcomm_config
         /*
          * Check GPIO IRQ
          */
+        RTCOMM_DBG("check GPIO IRQ");
         ret = gpio_to_irq(config->notify_pin_id);
         
         if (ret < 0) {
@@ -282,6 +294,7 @@ static int init_sampling(struct rtcomm_state * state, const struct rtcomm_config
         /*
          * Create consumer thread
          */
+        RTCOMM_DBG("create consumer thread");
         state->thread_consumer = kthread_create(thread_fifo_consumer, state, 
                         "rtcomm_fifo_consumer");
                         
@@ -296,6 +309,8 @@ static int init_sampling(struct rtcomm_state * state, const struct rtcomm_config
         state->config = *config;
         state->is_initialized = true;
         
+        RTCOMM_DBG("initialization complete");
+
         return (0);
         
 FAIL_CREATE_THREAD:
@@ -332,6 +347,7 @@ static int start_sampling(struct rtcomm_state * state)
 {
         int                     ret;
         
+        RTCOMM_DBG("start_sampling()");
         spi_bus_lock(state->spi->master);
         init_completion(&state->isr_signal);
         init_completion(&state->thread_shutdown);
@@ -380,6 +396,8 @@ static int stop_sampling(struct rtcomm_state * state)
 
 /*--  FIFO consumer thread  --------------------------------------------------*/
 
+
+
 static int thread_fifo_consumer(void * data)
 {
         struct rtcomm_state *   state = data;
@@ -413,6 +431,8 @@ static int thread_fifo_consumer(void * data)
 }
 
 /*--  PPBUF  -----------------------------------------------------------------*/
+
+
 
 static struct fifo_buff * fifo_buff_init(uint32_t size)
 {
@@ -465,6 +485,8 @@ static void * fifo_buff_create(struct fifo_buff * fifo_buff)
             return (NULL);
         }
 }
+
+
 
 static void fifo_buff_delete(struct fifo_buff * fifo_buff, void * storage)
 {
