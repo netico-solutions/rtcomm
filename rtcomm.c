@@ -406,6 +406,7 @@ static int thread_fifo_consumer(void * data)
         struct rtcomm_state *   state = data;
         struct spi_message      message;
         struct spi_transfer     transfer;
+        RTCOMM_DBG("start thread_fifo_consumer()\n");
         
         for (;;) {
                 void *          storage;
@@ -413,13 +414,10 @@ static int thread_fifo_consumer(void * data)
                 wait_for_completion(&state->isr_signal);
                 
                 if (kthread_should_stop()) {
-                    break;
+                        RTCOMM_DBG("exiting thread_fifo_consumer()\n");
+                        break;
                 }
                 storage = fifo_buff_create(state->fifo_buff);
-                
-                if (!storage) {
-                    continue;
-                }
                 memset(&transfer, 0, sizeof(transfer));
                 transfer.rx_buf = storage;
                 transfer.len    = fifo_buff_size(state->fifo_buff);
