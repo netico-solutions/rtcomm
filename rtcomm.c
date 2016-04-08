@@ -113,7 +113,10 @@ struct fifo_buff
         struct completion       put;
         struct completion       get;
         uint32_t                size;
-        void *                  buffer;
+        void *                  buffer_a;
+        void *                  buffer_b;
+        void *                  consumer;
+        void *                  producer;
 };
 
 static int rtcomm_open(struct inode * inode, struct file * fd);
@@ -449,15 +452,27 @@ static struct fifo_buff * fifo_buff_init(uint32_t size)
         init_completion(&fifo_buff->put);
         init_completion(&fifo_buff->get);
         fifo_buff->size         = size;
-        fifo_buff->buffer       = kmalloc(size, GFP_DMA | GFP_KERNEL);
-        RTCOMM_DBG("storage fifo_buff: %p\n", fifo_buff->buffer);
+        fifo_buff->buffer_a     = kmalloc(size, GFP_DMA | GFP_KERNEL);
+        RTCOMM_DBG("storage fifo_buff A: %p\n", fifo_buff->buffer_a);
 
-        if (!fifo_buff->buffer) {
-                RTCOMM_ERR("failed to allocate fifo_buff storage\n");
+        if (!fifo_buff->buffer_a) {
+                RTCOMM_ERR("failed to allocate fifo_buff A storage\n");
                 kfree(fifo_buff);
 
                 return (NULL);
         }
+        fifo_buff->buffer_b     = kmalloc(size, GFP_DMA | GFP_KERNEL);
+        RTCOMM_DBG("storage fifo_buff B: %p\n", fifo_buff->buffer_b);
+
+        if (!fifo_buff->buffer_b) {
+                RTCOMM_ERR("failed to allocate fifo_buff B storage\n");
+                kfree(fifo_buff->buffer_a);
+                kfree(fifo_buff);
+
+                return (NULL);
+        }
+        fifo_buff->consumer = fifo_buff->buffer_a;
+        fifo_buff->producer = fifo_buff->buffer_b;
         complete(&fifo_buff->get);
         
         return (fifo_buff);
@@ -468,7 +483,8 @@ static struct fifo_buff * fifo_buff_init(uint32_t size)
 static void fifo_buff_term(struct fifo_buff * fifo_buff)
 {
         if (fifo_buff) {
-                kfree(fifo_buff->buffer);
+                kfree(fifo_buff->buffer_a);
+                kfree(fifo_buff->buffer_b);
                 kfree(fifo_buff);
         }
 }
@@ -480,7 +496,7 @@ static void * fifo_buff_create(struct fifo_buff * fifo_buff)
         if (try_wait_for_completion(&fifo_buff->get)) {
             reinit_completion(&fifo_buff->get);
             
-            return (fifo_buff->buffer);
+            return (fifo_buff->producer);
         } else {
             return (NULL);
         }
@@ -500,7 +516,7 @@ static void * fifo_buff_get(struct fifo_buff * fifo_buff)
         wait_for_completion(&fifo_buff->put);
         reinit_completion(&fifo_buff->put);
 
-        return (fifo_buff->buffer);
+        return (fifo_buff->consumer);
 }
 
 
