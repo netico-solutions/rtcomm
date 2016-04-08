@@ -12,6 +12,10 @@ all:
 clean:
 	make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -C $(LINUX_SRC) M=$(PWD) clean
 
+test:
+	arm-linux-gnueabihf-gcc -o rtcomm_test rtcomm_test.c
+
 ifndef LINUX_SRC
 	$(error LINUX_SRC variable is not set)
 endif
+
