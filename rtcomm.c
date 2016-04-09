@@ -45,7 +45,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_INF(msg, ...)                                                    \
         do {                                                                    \
-                if (g_state.config.log_level >= LOG_LEVEL_INF) {                \
+                if (g_arg_log_level >= LOG_LEVEL_INF) {                \
                         printk(KERN_INFO RTCOMM_NAME " info: " msg,             \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -53,7 +53,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_NOT(msg, ...)                                                    \
         do {                                                                    \
-                if (g_state.config.log_level >= LOG_LEVEL_NOT) {                \
+                if (g_arg_log_level >= LOG_LEVEL_NOT) {                \
                         printk(KERN_NOTICE  RTCOMM_NAME ": " msg,               \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -61,7 +61,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_WRN(msg, ...)                                                    \
         do {                                                                    \
-                if (g_state.config.log_level >= LOG_LEVEL_WRN) {                \
+                if (g_arg_log_level >= LOG_LEVEL_WRN) {                \
                         printk(KERN_WARNING RTCOMM_NAME " warning: " msg,       \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -69,7 +69,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_DBG(msg, ...)                                                    \
         do {                                                                    \
-                if (g_state.config.log_level >= LOG_LEVEL_DBG) {                \
+                if (g_arg_log_level >= LOG_LEVEL_DBG) {                \
                         printk(KERN_DEFAULT RTCOMM_NAME " debug: " msg,         \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -82,7 +82,6 @@ struct fifo_buff;
 
 struct rtcomm_config
 {
-        int                     log_level;
         int                     notify_pin_id;
         int                     spi_bus_id;
         int                     spi_bus_speed;
@@ -98,12 +97,12 @@ struct rtcomm_state
         struct fifo_buff *      fifo_buff;
         struct task_struct *    thread_consumer;
         struct completion       isr_signal;
-        struct completion       thread_shutdown;
         struct rtcomm_config    config;
         char                    notify_label[64];
         bool                    is_busy;
         bool                    is_initialized;
         bool                    is_running;
+        bool                    should_exit;
 };
 
 
@@ -179,10 +178,9 @@ static struct rtcomm_config     g_pending_config;
 
 static void config_init_pending(void)
 {
-        g_pending_config.log_level              = g_arg_log_level;
         g_pending_config.notify_pin_id          = g_arg_notify_pin_id;
         g_pending_config.spi_bus_id             = g_arg_bus_id;
-        g_pending_config.spi_bus_speed          = 20000000ul;
+        g_pending_config.spi_bus_speed          = 10000000ul;
         g_pending_config.buffer_size_bytes      = g_arg_buffer_size_bytes;
 }
 
@@ -308,7 +306,6 @@ static int init_sampling(struct rtcomm_state * state,
                 goto FAIL_CREATE_THREAD;
         }
         init_completion(&state->isr_signal);
-        init_completion(&state->thread_shutdown);
         state->config = *config;
         state->is_initialized = true;
         
@@ -353,7 +350,6 @@ static int start_sampling(struct rtcomm_state * state)
         RTCOMM_DBG("start_sampling()");
         spi_bus_lock(state->spi->master);
         init_completion(&state->isr_signal);
-        init_completion(&state->thread_shutdown);
         
         ret = request_irq(
                         gpio_to_irq(state->config.notify_pin_id), 
@@ -369,6 +365,7 @@ static int start_sampling(struct rtcomm_state * state)
                 
                 goto FAIL_GPIO_ISR_REQUEST;
         }
+        state->should_exit = false;
         wake_up_process(state->thread_consumer);
         state->is_running = true;
 
@@ -386,11 +383,12 @@ static int stop_sampling(struct rtcomm_state * state)
 {
         if (state->is_running) {
                 state->is_running = false;
+                state->should_exit = true;
+                RTCOMM_DBG("stop sampling()\n");
                 disable_irq_nosync(gpio_to_irq(state->config.notify_pin_id));
                 free_irq(gpio_to_irq(state->config.notify_pin_id), NULL);
-                kthread_stop(state->thread_consumer);
                 complete(&state->isr_signal);
-                wait_for_completion(&state->thread_shutdown);
+                kthread_stop(state->thread_consumer);
                 spi_bus_unlock(state->spi->master);
         }
         
@@ -404,18 +402,20 @@ static int stop_sampling(struct rtcomm_state * state)
 static int thread_fifo_consumer(void * data)
 {
         struct rtcomm_state *   state = data;
-        struct spi_message      message;
-        struct spi_transfer     transfer;
+        static struct spi_message      message;
+        static struct spi_transfer     transfer;
         RTCOMM_DBG("start thread_fifo_consumer()\n");
         
         for (;;) {
                 void *          storage;
+                RTCOMM_DBG("thread_fifo_consumer(): wait\n");
 
                 wait_for_completion(&state->isr_signal);
-                
-                if (kthread_should_stop()) {
-                        RTCOMM_DBG("exiting thread_fifo_consumer()\n");
-                        break;
+                RTCOMM_DBG("thread_fifo_consumer(): got signal\n");
+
+                if (state->should_exit) {
+                        RTCOMM_NOT("thread_fifo_consumer(): exiting\n");
+                        do_exit(0);
                 }
                 storage = fifo_buff_create(state->fifo_buff);
                 memset(&transfer, 0, sizeof(transfer));
@@ -424,9 +424,27 @@ static int thread_fifo_consumer(void * data)
                 spi_message_init(&message);
                 spi_message_add_tail(&transfer, &message);
                 spi_sync_locked(state->spi, &message);
+                RTCOMM_DBG("received %d bytes\n", transfer.len);
+
+                {
+                        int idx;
+                        uint8_t * buffer = storage;
+
+                        for (idx = 0; idx < 16; idx+=8) {
+                                printk(KERN_INFO "%d: %x %x %x %x %x %x %x %x\n",
+                                                idx,
+                                                buffer[idx],
+                                                buffer[idx + 1],
+                                                buffer[idx + 2],
+                                                buffer[idx + 3],
+                                                buffer[idx + 4],
+                                                buffer[idx + 5],
+                                                buffer[idx + 6],
+                                                buffer[idx + 7]);
+                        }
+                }
                 fifo_buff_put(state->fifo_buff, storage);
         }
-        complete(&state->thread_shutdown);
         
         return (0);
 }
@@ -504,6 +522,9 @@ static void * fifo_buff_create(struct fifo_buff * fifo_buff)
 
 static void fifo_buff_delete(struct fifo_buff * fifo_buff, void * storage)
 {
+        void *                  tmp;
+
+        fifo_buff->consumer = fifo_buff->producer;
         complete(&fifo_buff->get);
 }
 
@@ -511,10 +532,12 @@ static void fifo_buff_delete(struct fifo_buff * fifo_buff, void * storage)
 
 static void * fifo_buff_get(struct fifo_buff * fifo_buff)
 {
-        wait_for_completion(&fifo_buff->put);
+        if (wait_for_completion_interruptible(&fifo_buff->put) != 0) {
+                return (NULL);
+        }
         reinit_completion(&fifo_buff->put);
 
-        return (fifo_buff->consumer);
+        return (fifo_buff->producer);
 }
 
 
@@ -569,7 +592,7 @@ static ssize_t rtcomm_read(struct file * fd, char __user * buff,
         storage = fifo_buff_get(state->fifo_buff);
         
         if (!storage) {
-                RTCOMM_ERR("read(): failed to get data storage\n");
+                RTCOMM_ERR("read(): aborted\n");
                 retval = -ENOMEM;
 
                 goto FAIL_GET_STORAGE;
