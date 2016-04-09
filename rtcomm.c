@@ -45,7 +45,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_INF(msg, ...)                                                    \
         do {                                                                    \
-                if (g_arg_log_level >= LOG_LEVEL_INF) {                \
+                if (g_arg_log_level >= LOG_LEVEL_INF) {                         \
                         printk(KERN_INFO RTCOMM_NAME " info: " msg,             \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -53,7 +53,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_NOT(msg, ...)                                                    \
         do {                                                                    \
-                if (g_arg_log_level >= LOG_LEVEL_NOT) {                \
+                if (g_arg_log_level >= LOG_LEVEL_NOT) {                         \
                         printk(KERN_NOTICE  RTCOMM_NAME ": " msg,               \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -61,7 +61,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_WRN(msg, ...)                                                    \
         do {                                                                    \
-                if (g_arg_log_level >= LOG_LEVEL_WRN) {                \
+                if (g_arg_log_level >= LOG_LEVEL_WRN) {                         \
                         printk(KERN_WARNING RTCOMM_NAME " warning: " msg,       \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -69,7 +69,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_DBG(msg, ...)                                                    \
         do {                                                                    \
-                if (g_arg_log_level >= LOG_LEVEL_DBG) {                \
+                if (g_arg_log_level >= LOG_LEVEL_DBG) {                         \
                         printk(KERN_DEFAULT RTCOMM_NAME " debug: " msg,         \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -425,24 +425,6 @@ static int thread_fifo_consumer(void * data)
                 spi_message_add_tail(&transfer, &message);
                 spi_sync_locked(state->spi, &message);
                 RTCOMM_DBG("received %d bytes\n", transfer.len);
-
-                {
-                        int idx;
-                        uint8_t * buffer = storage;
-
-                        for (idx = 0; idx < 16; idx+=8) {
-                                printk(KERN_INFO "%d: %x %x %x %x %x %x %x %x\n",
-                                                idx,
-                                                buffer[idx],
-                                                buffer[idx + 1],
-                                                buffer[idx + 2],
-                                                buffer[idx + 3],
-                                                buffer[idx + 4],
-                                                buffer[idx + 5],
-                                                buffer[idx + 6],
-                                                buffer[idx + 7]);
-                        }
-                }
                 fifo_buff_put(state->fifo_buff, storage);
         }
         
