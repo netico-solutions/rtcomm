@@ -30,7 +30,7 @@
 
 #define RTCOMM_LOG_LEVEL                LOG_LEVEL_WRN
 #define RTCOMM_BUILD_TIME               "12:00"
-#define RTCOMM_BUILD_DATE               "2016-04-05"
+#define RTCOMM_BUILD_DATE               "2016-04-13"
 #define RTCOMM_BUILD_VER                "v1.0"
 #define RTCOMM_VERSION                  RTCOMM_BUILD_VER " - " RTCOMM_BUILD_DATE
 
@@ -103,6 +103,11 @@ struct rtcomm_state
         bool                    is_initialized;
         bool                    is_running;
         bool                    should_exit;
+
+        struct rtcomm_perf
+        {
+                uint32_t                skip_read_data_buff;
+        }                       perf;              
 };
 
 
@@ -110,8 +115,13 @@ struct rtcomm_state
 struct fifo_buff
 {
         struct completion       put;
-        struct completion       get;
         uint32_t                size;
+        bool                    is_reading;
+        /* NOTE:
+         * Buffer pointers are kept for allocation / deallocation of data
+         * buffers in case when FIFO is interrupted during pointer swapping in
+         * which case consumer and producer pointers are invalid.
+         */
         void *                  buffer_a;
         void *                  buffer_b;
         void *                  consumer;
@@ -129,8 +139,9 @@ static struct fifo_buff * fifo_buff_init(uint32_t size);
 static void fifo_buff_term(struct fifo_buff * fifo_buff);
 static void * fifo_buff_create(struct fifo_buff * fifo_buff);
 static void fifo_buff_delete(struct fifo_buff * fifo_buff, void * storage);
+static void fifo_buff_recycle(struct fifo_buff * fifo_buff, void * storage);
 static void * fifo_buff_get(struct fifo_buff * fifo_buff);
-static void fifo_buff_put(struct fifo_buff * fifo_buff, void * storage);
+static int fifo_buff_put(struct fifo_buff * fifo_buff, void * storage);
 static uint32_t fifo_buff_size(struct fifo_buff * fifo_buff);
 
 static int thread_fifo_consumer(void * data);
@@ -207,7 +218,10 @@ static int init_sampling(struct rtcomm_state * state,
 {
         int                     ret;
         struct spi_master *     master;
-        
+       
+        if (state->is_initialized) {
+                return (-EBUSY);
+        }
         /* 
          * Get SPI bus ID
          */
@@ -366,6 +380,7 @@ static int start_sampling(struct rtcomm_state * state)
                 goto FAIL_GPIO_ISR_REQUEST;
         }
         state->should_exit = false;
+        memset(&state->perf, 0, sizeof(state->perf));
         wake_up_process(state->thread_consumer);
         state->is_running = true;
 
@@ -408,7 +423,6 @@ static int thread_fifo_consumer(void * data)
         
         for (;;) {
                 void *          storage;
-                RTCOMM_DBG("thread_fifo_consumer(): wait\n");
 
                 wait_for_completion(&state->isr_signal);
                 RTCOMM_DBG("thread_fifo_consumer(): got signal\n");
@@ -424,8 +438,12 @@ static int thread_fifo_consumer(void * data)
                 spi_message_init(&message);
                 spi_message_add_tail(&transfer, &message);
                 spi_sync_locked(state->spi, &message);
-                RTCOMM_DBG("received %d bytes\n", transfer.len);
-                fifo_buff_put(state->fifo_buff, storage);
+
+                if (fifo_buff_put(state->fifo_buff, storage)) {
+                        state->perf.skip_read_data_buff++;
+                        RTCOMM_ERR("data read buffer skipped: %d time(s)\n",
+                                        state->perf.skip_read_data_buff);
+                }
         }
         
         return (0);
@@ -435,6 +453,11 @@ static int thread_fifo_consumer(void * data)
 
 
 
+/* NOTE:
+ * FIFO buffers are currently organized as ping-pong buffers which implies that
+ * only two buffers are used. If a need should arise then we will make true
+ * FIFO buffer.
+ */
 static struct fifo_buff * fifo_buff_init(uint32_t size)
 {
         struct fifo_buff * fifo_buff;
@@ -448,7 +471,6 @@ static struct fifo_buff * fifo_buff_init(uint32_t size)
                 return (NULL);
         }
         init_completion(&fifo_buff->put);
-        init_completion(&fifo_buff->get);
         fifo_buff->size         = size;
         fifo_buff->buffer_a     = kmalloc(size, GFP_DMA | GFP_KERNEL);
         RTCOMM_DBG("storage fifo_buff A: %p\n", fifo_buff->buffer_a);
@@ -471,7 +493,7 @@ static struct fifo_buff * fifo_buff_init(uint32_t size)
         }
         fifo_buff->consumer = fifo_buff->buffer_a;
         fifo_buff->producer = fifo_buff->buffer_b;
-        complete(&fifo_buff->get);
+        fifo_buff->is_reading = false;
         
         return (fifo_buff);
 }
@@ -480,34 +502,36 @@ static struct fifo_buff * fifo_buff_init(uint32_t size)
 
 static void fifo_buff_term(struct fifo_buff * fifo_buff)
 {
-        if (fifo_buff) {
-                kfree(fifo_buff->buffer_a);
-                kfree(fifo_buff->buffer_b);
-                kfree(fifo_buff);
-        }
+        kfree(fifo_buff->buffer_a);
+        kfree(fifo_buff->buffer_b);
+        kfree(fifo_buff);
 }
 
 
 
 static void * fifo_buff_create(struct fifo_buff * fifo_buff)
 {
-        if (try_wait_for_completion(&fifo_buff->get)) {
-            reinit_completion(&fifo_buff->get);
-            
-            return (fifo_buff->producer);
-        } else {
-            return (NULL);
-        }
+        return (fifo_buff->producer);
 }
 
 
 
 static void fifo_buff_delete(struct fifo_buff * fifo_buff, void * storage)
 {
-        void *                  tmp;
+        fifo_buff_recycle(fifo_buff, storage);
+        fifo_buff->is_reading = false;
+}
 
-        fifo_buff->consumer = fifo_buff->producer;
-        complete(&fifo_buff->get);
+
+
+static void fifo_buff_recycle(struct fifo_buff * fifo_buff, void * storage)
+{
+        /* NOTE:
+         * Reinitialize the completion. This function is called at the end of
+         * read file operation. By doing this call at the end we disregard all
+         * completions that might happen during read operations.
+         */
+        reinit_completion(&fifo_buff->put);
 }
 
 
@@ -517,16 +541,29 @@ static void * fifo_buff_get(struct fifo_buff * fifo_buff)
         if (wait_for_completion_interruptible(&fifo_buff->put) != 0) {
                 return (NULL);
         }
-        reinit_completion(&fifo_buff->put);
-
-        return (fifo_buff->producer);
+        
+        return (fifo_buff->consumer);
 }
 
 
 
-static void fifo_buff_put(struct fifo_buff * fifo_buff, void * storage)
+static int fifo_buff_put(struct fifo_buff * fifo_buff, void * storage)
 {
+        int                     retval = 1;
+
+        if (!fifo_buff->is_reading) {
+                void *          tmp;
+
+                tmp = fifo_buff->producer;
+                fifo_buff->producer = fifo_buff->consumer;
+                fifo_buff->consumer = tmp;
+
+                retval = 0;
+        }
+        fifo_buff->is_reading = true;
         complete(&fifo_buff->put);
+
+        return (retval);
 }
 
 
@@ -574,7 +611,7 @@ static ssize_t rtcomm_read(struct file * fd, char __user * buff,
         storage = fifo_buff_get(state->fifo_buff);
         
         if (!storage) {
-                RTCOMM_ERR("read(): aborted\n");
+                RTCOMM_NOT("read(): aborted\n");
                 retval = -ENOMEM;
 
                 goto FAIL_GET_STORAGE;
@@ -590,7 +627,7 @@ static ssize_t rtcomm_read(struct file * fd, char __user * buff,
         
         return (byte_count);
 FAIL_COPY_TO_USER:
-        fifo_buff_delete(state->fifo_buff, storage);
+        fifo_buff_recycle(state->fifo_buff, storage);
 FAIL_GET_STORAGE:
 
         return (retval);
@@ -669,26 +706,29 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
                         break;
                 }
                 case RTCOMM_START: {
-                        int     ret;
+                        retval = init_sampling(state, &g_pending_config);
                         
-                        ret = init_sampling(state, &g_pending_config);
-                        
-                        if (ret) {
-                                retval = -EINVAL;
+                        if (retval) {
                                 break;
                         }
+                        retval = start_sampling(state);
                         
-                        ret = start_sampling(state);
-                        
-                        if (ret) {
-                                retval = -EINVAL;
+                        if (retval) {
                                 break;
                         }
                         break;
                 }
                 case RTCOMM_STOP: {
-                        stop_sampling(state);
-                        term_sampling(state);
+                        retval = stop_sampling(state);
+
+                        if (retval) {
+                                break;
+                        }
+                        retval = term_sampling(state);
+
+                        if (retval) {
+                                break;
+                        }
                         break;
                 }
                 default : {
