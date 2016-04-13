@@ -4,6 +4,7 @@
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
+#include <stdint.h>
 
 #include "rtcomm.h"
 
@@ -13,7 +14,7 @@ int main(void)
         int                     buffer_size;
         int                     count;
         char                    version[20];
-        char                    buffer[16];
+        char                    buffer[2000];
 
         fprintf(stdout, "RTCOMM drv test 1, ver:" __DATE__ " : " __TIME__ "\n");
 
@@ -58,9 +59,22 @@ int main(void)
                 if (ret != buffer_size) {
                         fprintf(stderr, "Failed to read %d bytes, error: %d\n",
                                         buffer_size, ret);
+
+                        return (-1);
                 } else {
                         fprintf(stdout, " %05d: read %d bytes\n", count++,
                                         buffer_size);
+                                uint32_t idx;
+                                uint32_t idxl;
+
+                                for (idx = 0; idx < 64; idx += 8) {
+                                        printf("\ti %05d: ", idx);
+                                        for (idxl = 0; idxl < 8; idxl++) {
+                                                printf("%x ",
+                                                        buffer[idxl + idx]);
+                                        }
+                                        printf("\n");
+                                }
                 }
         }
 
