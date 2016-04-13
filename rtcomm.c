@@ -95,9 +95,10 @@ struct rtcomm_state
         struct spi_board_info   spi_board_info;
         struct spi_device *     spi;
         struct fifo_buff *      fifo_buff;
-        struct task_struct *    thread_consumer;
+        struct task_struct *    thd_rtcomm_fifo;
         struct completion       isr_signal;
         struct rtcomm_config    config;
+        pid_t                   thd_rtcomm_fifo_pid;
         char                    notify_label[64];
         bool                    is_busy;
         bool                    is_initialized;
@@ -144,7 +145,7 @@ static void * fifo_buff_get(struct fifo_buff * fifo_buff);
 static int fifo_buff_put(struct fifo_buff * fifo_buff, void * storage);
 static uint32_t fifo_buff_size(struct fifo_buff * fifo_buff);
 
-static int thread_fifo_consumer(void * data);
+static int rtcomm_fifo(void * data);
 
 /*--  Module parameters  -----------------------------------------------------*/
 static int g_arg_bus_id = -1;
@@ -310,11 +311,11 @@ static int init_sampling(struct rtcomm_state * state,
          * Create consumer thread
          */
         RTCOMM_DBG("create consumer thread");
-        state->thread_consumer = kthread_create(thread_fifo_consumer, state, 
-                        "rtcomm_fifo_consumer");
+        state->thd_rtcomm_fifo = kthread_create(rtcomm_fifo, state, 
+                        "rtcomm_fifo");
                         
-        if (IS_ERR(state->thread_consumer)) {
-                RTCOMM_ERR("can't create thread_consumer");
+        if (IS_ERR(state->thd_rtcomm_fifo)) {
+                RTCOMM_ERR("can't create thd_rtcomm_fifo");
                 ret = -ENOMEM;
                 
                 goto FAIL_CREATE_THREAD;
@@ -381,7 +382,7 @@ static int start_sampling(struct rtcomm_state * state)
         }
         state->should_exit = false;
         memset(&state->perf, 0, sizeof(state->perf));
-        wake_up_process(state->thread_consumer);
+        wake_up_process(state->thd_rtcomm_fifo);
         state->is_running = true;
 
         return (0);
@@ -403,7 +404,7 @@ static int stop_sampling(struct rtcomm_state * state)
                 disable_irq_nosync(gpio_to_irq(state->config.notify_pin_id));
                 free_irq(gpio_to_irq(state->config.notify_pin_id), NULL);
                 complete(&state->isr_signal);
-                kthread_stop(state->thread_consumer);
+                kthread_stop(state->thd_rtcomm_fifo);
                 spi_bus_unlock(state->spi->master);
         }
         
@@ -414,21 +415,24 @@ static int stop_sampling(struct rtcomm_state * state)
 
 
 
-static int thread_fifo_consumer(void * data)
+static int rtcomm_fifo(void * data)
 {
         struct rtcomm_state *   state = data;
         static struct spi_message      message;
         static struct spi_transfer     transfer;
-        RTCOMM_DBG("start thread_fifo_consumer()\n");
+        
+        RTCOMM_NOT("rtcomm_fifo(): %d:%d\n", current->group_leader->pid, 
+                        current->pid);
+        state->thd_rtcomm_fifo_pid = current->pid;
         
         for (;;) {
                 void *          storage;
 
                 wait_for_completion(&state->isr_signal);
-                RTCOMM_DBG("thread_fifo_consumer(): got signal\n");
+                RTCOMM_DBG("rtcomm_fifo(): got signal\n");
 
                 if (state->should_exit) {
-                        RTCOMM_NOT("thread_fifo_consumer(): exiting\n");
+                        RTCOMM_NOT("rtcomm_fifo(): exiting\n");
                         do_exit(0);
                 }
                 storage = fifo_buff_create(state->fifo_buff);
@@ -674,6 +678,8 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
         long                    retval;
         struct rtcomm_state *   state  = state_from_fd(fd);
 
+        RTCOMM_NOT("ioctl(): %d:%d\n", current->group_leader->pid, current->pid);
+        
         retval = 0;
 
         switch (cmd) {
@@ -730,6 +736,24 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
                                 break;
                         }
                         break;
+                }
+                case RTCOMM_GET_FIFO_PID: {
+                        signed long long pid;
+
+                        if (!state->is_running) {
+                                retval = - EINVAL;
+                                break;
+                        }
+                        pid = state->thd_rtcomm_fifo_pid;
+
+                        retval = copy_to_user(&pid, (void __user *)arg, 
+                                        sizeof(pid));
+
+                        if (retval) {
+                                retval = -EINVAL;
+                                break;
+                        }
+                        break;                        
                 }
                 default : {
                         retval = -EINVAL;
