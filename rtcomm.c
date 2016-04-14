@@ -363,15 +363,16 @@ static int start_sampling(struct rtcomm_state * state)
         int                     ret;
         
         RTCOMM_DBG("start_sampling()");
+        
+        memset(&state->perf, 0, sizeof(state->perf));
+        state->should_exit = false;
         spi_bus_lock(state->spi->master);
         init_completion(&state->isr_signal);
+        wake_up_process(state->thd_rtcomm_fifo);
         
-        ret = request_irq(
-                        gpio_to_irq(state->config.notify_pin_id), 
-                        &trigger_notify_handler, 
-                        IRQF_TRIGGER_RISING, 
-                        state->notify_label, 
-                        NULL);
+        ret = request_irq(gpio_to_irq(state->config.notify_pin_id), 
+                        &trigger_notify_handler, IRQF_TRIGGER_RISING, 
+                        state->notify_label, NULL);
                         
         if (ret) {
                 RTCOMM_ERR("NOTIFY gpio %d interrupt request failed: %d\n", 
@@ -380,9 +381,6 @@ static int start_sampling(struct rtcomm_state * state)
                 
                 goto FAIL_GPIO_ISR_REQUEST;
         }
-        state->should_exit = false;
-        memset(&state->perf, 0, sizeof(state->perf));
-        wake_up_process(state->thd_rtcomm_fifo);
         state->is_running = true;
 
         return (0);
@@ -398,7 +396,6 @@ FAIL_GPIO_ISR_REQUEST:
 static int stop_sampling(struct rtcomm_state * state)
 {
         if (state->is_running) {
-                state->is_running = false;
                 state->should_exit = true;
                 RTCOMM_DBG("stop sampling()\n");
                 disable_irq_nosync(gpio_to_irq(state->config.notify_pin_id));
@@ -406,6 +403,7 @@ static int stop_sampling(struct rtcomm_state * state)
                 complete(&state->isr_signal);
                 kthread_stop(state->thd_rtcomm_fifo);
                 spi_bus_unlock(state->spi->master);
+                state->is_running = false;
         }
         
         return (0);
@@ -413,17 +411,28 @@ static int stop_sampling(struct rtcomm_state * state)
 
 /*--  FIFO consumer thread  --------------------------------------------------*/
 
-
+#
 
 static int rtcomm_fifo(void * data)
 {
         struct rtcomm_state *   state = data;
+        struct sched_param      sched_param;
+        int                     retval;
         static struct spi_message      message;
         static struct spi_transfer     transfer;
         
         RTCOMM_NOT("rtcomm_fifo(): %d:%d\n", current->group_leader->pid, 
                         current->pid);
         state->thd_rtcomm_fifo_pid = current->pid;
+       
+        memset(&sched_param, 0, sizeof(sched_param));
+        sched_param.sched_priority = MAX_RT_PRIO - 1;
+        retval = sched_setscheduler(current, SCHED_FIFO, &sched_param);
+        
+        if (retval) {
+                RTCOMM_WRN("rtcomm_fifo(): couldn't set scheduler policy: %d\n",
+                                retval);
+        }
         
         for (;;) {
                 void *          storage;
