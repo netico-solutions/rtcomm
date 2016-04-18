@@ -192,7 +192,7 @@ static void config_init_pending(void)
 {
         g_pending_config.notify_pin_id          = g_arg_notify_pin_id;
         g_pending_config.spi_bus_id             = g_arg_bus_id;
-        g_pending_config.spi_bus_speed          = 10000000ul;
+        g_pending_config.spi_bus_speed          = 20000000ul;
         g_pending_config.buffer_size_bytes      = g_arg_buffer_size_bytes;
 }
 
@@ -764,6 +764,10 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
                         }
                         break;                        
                 }
+                case RTCOMM_GET_FIFO_PRIO: {
+                        int prio;
+
+                        prio = 
                 default : {
                         retval = -EINVAL;
                         break;
