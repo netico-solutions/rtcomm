@@ -137,12 +137,12 @@ static long rtcomm_ioctl(struct file *, unsigned int, unsigned long);
 static irqreturn_t trigger_notify_handler(int irq, void * p);
 
 static struct fifo_buff * fifo_buff_init(uint32_t size);
-static void fifo_buff_term(struct fifo_buff * fifo_buff);
-static void * fifo_buff_create(struct fifo_buff * fifo_buff);
-static void fifo_buff_delete(struct fifo_buff * fifo_buff, void * storage);
-static void fifo_buff_recycle(struct fifo_buff * fifo_buff, void * storage);
-static void * fifo_buff_get(struct fifo_buff * fifo_buff);
-static int fifo_buff_put(struct fifo_buff * fifo_buff, void * storage);
+static void     fifo_buff_term(struct fifo_buff * fifo_buff);
+static void *   fifo_buff_create(struct fifo_buff * fifo_buff);
+static void     fifo_buff_delete(struct fifo_buff * fifo_buff, void * storage);
+static void     fifo_buff_recycle(struct fifo_buff * fifo_buff, void * storage);
+static void *   fifo_buff_get(struct fifo_buff * fifo_buff);
+static int      fifo_buff_put(struct fifo_buff * fifo_buff, void * storage);
 static uint32_t fifo_buff_size(struct fifo_buff * fifo_buff);
 
 static int rtcomm_fifo(void * data);
@@ -221,8 +221,10 @@ static int init_sampling(struct rtcomm_state * state,
         struct spi_master *     master;
        
         if (state->is_initialized) {
-                return (-EBUSY);
+                return (0);
         }
+        RTCOMM_DBG("init_sampling()");
+
         /* 
          * Get SPI bus ID
          */
@@ -320,12 +322,12 @@ static int init_sampling(struct rtcomm_state * state,
                 
                 goto FAIL_CREATE_THREAD;
         }
-        init_completion(&state->isr_signal);
         state->config = *config;
+        state->should_exit = false;
+        init_completion(&state->isr_signal);
+        wake_up_process(state->thd_rtcomm_fifo);
         state->is_initialized = true;
         
-        RTCOMM_DBG("initialization complete");
-
         return (0);
         
 FAIL_CREATE_THREAD:
@@ -346,12 +348,17 @@ FAIL_MASTER:
 
 static int term_sampling(struct rtcomm_state * state) 
 {
-        if (state->is_initialized) {
-                state->is_initialized = false;        
-                fifo_buff_term(state->fifo_buff);
-                gpio_free(state->config.notify_pin_id);
-                spi_unregister_device(state->spi);
+        if (!state->is_initialized) {
+                return (0);
         }
+        RTCOMM_DBG("term_sampling()");
+        state->is_initialized = false;        
+        state->should_exit    = true;
+        complete(&state->isr_signal);
+        kthread_stop(state->thd_rtcomm_fifo);
+        fifo_buff_term(state->fifo_buff);
+        gpio_free(state->config.notify_pin_id);
+        spi_unregister_device(state->spi);
         
         return (0);
 }
@@ -361,14 +368,16 @@ static int term_sampling(struct rtcomm_state * state)
 static int start_sampling(struct rtcomm_state * state)
 {
         int                     ret;
-        
+       
+        if (!state->is_initialized) {
+                return (-EFAULT);
+        }
+
+        if (state->is_running) {
+                return (-EBUSY);
+        }
         RTCOMM_DBG("start_sampling()");
-        
         memset(&state->perf, 0, sizeof(state->perf));
-        state->should_exit = false;
-        spi_bus_lock(state->spi->master);
-        init_completion(&state->isr_signal);
-        wake_up_process(state->thd_rtcomm_fifo);
         
         ret = request_irq(gpio_to_irq(state->config.notify_pin_id), 
                         &trigger_notify_handler, IRQF_TRIGGER_RISING, 
@@ -386,7 +395,6 @@ static int start_sampling(struct rtcomm_state * state)
         return (0);
         
 FAIL_GPIO_ISR_REQUEST:
-        spi_bus_unlock(state->spi->master); 
         
         return (ret);
 }
@@ -395,31 +403,28 @@ FAIL_GPIO_ISR_REQUEST:
 
 static int stop_sampling(struct rtcomm_state * state)
 {
-        if (state->is_running) {
-                state->should_exit = true;
-                RTCOMM_DBG("stop sampling()\n");
-                disable_irq_nosync(gpio_to_irq(state->config.notify_pin_id));
-                free_irq(gpio_to_irq(state->config.notify_pin_id), NULL);
-                complete(&state->isr_signal);
-                kthread_stop(state->thd_rtcomm_fifo);
-                spi_bus_unlock(state->spi->master);
-                state->is_running = false;
+        if (!state->is_running) {
+                return (0);
         }
+        RTCOMM_DBG("stop_sampling()");
+        state->is_running = false;
+        disable_irq(gpio_to_irq(state->config.notify_pin_id));
+        free_irq(gpio_to_irq(state->config.notify_pin_id), NULL);
         
         return (0);
 }
 
 /*--  FIFO consumer thread  --------------------------------------------------*/
 
-#
+
 
 static int rtcomm_fifo(void * data)
 {
         struct rtcomm_state *   state = data;
         struct sched_param      sched_param;
         int                     retval;
-        static struct spi_message      message;
-        static struct spi_transfer     transfer;
+        static struct spi_message message;
+        static struct spi_transfer transfer;
         
         RTCOMM_NOT("rtcomm_fifo(): %d:%d\n", current->group_leader->pid, 
                         current->pid);
@@ -433,6 +438,7 @@ static int rtcomm_fifo(void * data)
                 RTCOMM_WRN("rtcomm_fifo(): couldn't set scheduler policy: %d\n",
                                 retval);
         }
+        spi_bus_lock(state->spi->master);
         
         for (;;) {
                 void *          storage;
@@ -442,6 +448,7 @@ static int rtcomm_fifo(void * data)
 
                 if (state->should_exit) {
                         RTCOMM_NOT("rtcomm_fifo(): exiting\n");
+                        spi_bus_unlock(state->spi->master);
                         do_exit(0);
                 }
                 storage = fifo_buff_create(state->fifo_buff);
@@ -542,7 +549,7 @@ static void fifo_buff_recycle(struct fifo_buff * fifo_buff, void * storage)
         /* NOTE:
          * Reinitialize the completion. This function is called at the end of
          * read file operation. By doing this call at the end we disregard all
-         * completions that might happen during read operations.
+         * completions that might have happened during read operations.
          */
         reinit_completion(&fifo_buff->put);
 }
@@ -720,20 +727,7 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
                         g_pending_config.buffer_size_bytes = bytes;
                         break;
                 }
-                case RTCOMM_START: {
-                        retval = init_sampling(state, &g_pending_config);
-                        
-                        if (retval) {
-                                break;
-                        }
-                        retval = start_sampling(state);
-                        
-                        if (retval) {
-                                break;
-                        }
-                        break;
-                }
-                case RTCOMM_STOP: {
+                case RTCOMM_INIT: {
                         retval = stop_sampling(state);
 
                         if (retval) {
@@ -744,12 +738,34 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
                         if (retval) {
                                 break;
                         }
+                        retval = init_sampling(state, &g_pending_config);
+
+                        break;                                
+                }
+                case RTCOMM_START: {
+                        retval = start_sampling(state);
+
+                        break;
+                }
+                case RTCOMM_STOP: {
+                        retval = stop_sampling(state);
+
+                        break;
+                }
+                case RTCOMM_TERM: {
+                        retval = stop_sampling(state);
+
+                        if (retval) {
+                                break;
+                        }
+                        retval = term_sampling(state);
+
                         break;
                 }
                 case RTCOMM_GET_FIFO_PID: {
                         signed long long pid;
 
-                        if (!state->is_running) {
+                        if (!state->is_initialized) {
                                 retval = - EINVAL;
                                 break;
                         }
@@ -764,10 +780,6 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
                         }
                         break;                        
                 }
-                case RTCOMM_GET_FIFO_PRIO: {
-                        int prio;
-
-                        prio = 
                 default : {
                         retval = -EINVAL;
                         break;
