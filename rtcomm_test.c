@@ -49,8 +49,12 @@ int main(int argc, char * argv[])
 
         fd = open("/dev/" RTCOMM_NAME, O_RDONLY);
 
+        fprintf(stderr, "Open driver: %d\n", errno);
+
         if (!fd) {
                 fprintf(stderr, "Failed to open driver: %d\n", errno);
+
+                return (1);
         }
 
         if (ioctl(fd, RTCOMM_GET_VERSION, version) == -1) {

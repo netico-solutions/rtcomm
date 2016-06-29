@@ -30,7 +30,7 @@
 
 #define RTCOMM_LOG_LEVEL                LOG_LEVEL_WRN
 #define RTCOMM_BUILD_TIME               "12:00"
-#define RTCOMM_BUILD_DATE               "2016-04-13"
+#define RTCOMM_BUILD_DATE               "2016-04-28"
 #define RTCOMM_BUILD_VER                "v1.0"
 #define RTCOMM_VERSION                  RTCOMM_BUILD_VER " - " RTCOMM_BUILD_DATE
 
@@ -223,12 +223,12 @@ static int init_sampling(struct rtcomm_state * state,
         if (state->is_initialized) {
                 return (0);
         }
-        RTCOMM_DBG("init_sampling()");
+        RTCOMM_DBG("init_sampling()\n");
 
         /* 
          * Get SPI bus ID
          */
-        RTCOMM_DBG("get SPI bus ID");
+        RTCOMM_DBG("get SPI bus ID\n");
         strncpy(&state->spi_board_info.modalias[0], RTCOMM_NAME, SPI_NAME_SIZE);
         state->spi_board_info.max_speed_hz = config->spi_bus_speed;
         state->spi_board_info.bus_num      = config->spi_bus_id;
@@ -244,7 +244,7 @@ static int init_sampling(struct rtcomm_state * state,
         /*
          * Setup SPI device
          */
-        RTCOMM_DBG("setup SPI device");
+        RTCOMM_DBG("setup SPI device\n");
         state->spi = spi_new_device(master, &state->spi_board_info);
 
         if (!state->spi) {
@@ -268,7 +268,7 @@ static int init_sampling(struct rtcomm_state * state,
         /*
          * Get GPIO pin
          */
-        RTCOMM_DBG("get GPIO pin");
+        RTCOMM_DBG("get GPIO pin\n");
         sprintf(&state->notify_label[0], RTCOMM_NAME "-notify");
         RTCOMM_INF("gpio name: %s\n", state->notify_label);
         ret = gpio_request_one(config->notify_pin_id, GPIOF_DIR_IN, 
@@ -285,7 +285,7 @@ static int init_sampling(struct rtcomm_state * state,
         /*
          * Setup FIFO buffer
          */
-        RTCOMM_DBG("setup FIFO buffer");
+        RTCOMM_DBG("setup FIFO buffer\n");
         state->fifo_buff = fifo_buff_init(config->buffer_size_bytes);
         
         if (!state->fifo_buff) {
@@ -298,7 +298,7 @@ static int init_sampling(struct rtcomm_state * state,
         /*
          * Check GPIO IRQ
          */
-        RTCOMM_DBG("check GPIO IRQ");
+        RTCOMM_DBG("check GPIO IRQ\n");
         ret = gpio_to_irq(config->notify_pin_id);
         
         if (ret < 0) {
@@ -312,21 +312,21 @@ static int init_sampling(struct rtcomm_state * state,
         /*
          * Create consumer thread
          */
-        RTCOMM_DBG("create consumer thread");
+        RTCOMM_DBG("create consumer thread\n");
         state->thd_rtcomm_fifo = kthread_create(rtcomm_fifo, state, 
                         "rtcomm_fifo");
                         
         if (IS_ERR(state->thd_rtcomm_fifo)) {
-                RTCOMM_ERR("can't create thd_rtcomm_fifo");
+                RTCOMM_ERR("can't create thd_rtcomm_fifo\n");
                 ret = -ENOMEM;
                 
                 goto FAIL_CREATE_THREAD;
         }
         state->config = *config;
         state->should_exit = false;
+        state->is_initialized = true;
         init_completion(&state->isr_signal);
         wake_up_process(state->thd_rtcomm_fifo);
-        state->is_initialized = true;
         
         return (0);
         
@@ -433,6 +433,7 @@ static int rtcomm_fifo(void * data)
         memset(&sched_param, 0, sizeof(sched_param));
         sched_param.sched_priority = MAX_RT_PRIO - 1;
         retval = sched_setscheduler(current, SCHED_FIFO, &sched_param);
+        RTCOMM_DBG("rtcomm_fifo(): setting max priority\n");
         
         if (retval) {
                 RTCOMM_WRN("rtcomm_fifo(): couldn't set scheduler policy: %d\n",
@@ -444,7 +445,6 @@ static int rtcomm_fifo(void * data)
                 void *          storage;
 
                 wait_for_completion(&state->isr_signal);
-                RTCOMM_DBG("rtcomm_fifo(): got signal\n");
 
                 if (state->should_exit) {
                         RTCOMM_NOT("rtcomm_fifo(): exiting\n");
@@ -574,11 +574,11 @@ static int fifo_buff_put(struct fifo_buff * fifo_buff, void * storage)
         if (!fifo_buff->is_reading) {
                 void *          tmp;
 
+                retval = 0;
+
                 tmp = fifo_buff->producer;
                 fifo_buff->producer = fifo_buff->consumer;
                 fifo_buff->consumer = tmp;
-
-                retval = 0;
         }
         fifo_buff->is_reading = true;
         complete(&fifo_buff->put);
@@ -625,7 +625,7 @@ static ssize_t rtcomm_read(struct file * fd, char __user * buff,
          */
         *off = 0;
 
-        if (!state->is_running) {
+        if (!state->is_initialized) {
                 return (-ENODEV);
         }
         storage = fifo_buff_get(state->fifo_buff);
@@ -693,13 +693,18 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
 {
         long                    retval;
         struct rtcomm_state *   state  = state_from_fd(fd);
+        int                     cgpid;
+        int                     cpid;
 
-        RTCOMM_NOT("ioctl(): %d:%d\n", current->group_leader->pid, current->pid);
+        cgpid = current->group_leader->pid;
+        cpid = current->pid;
         
         retval = 0;
 
         switch (cmd) {
                 case RTCOMM_GET_VERSION: {
+                        RTCOMM_NOT("ioctl(): %d:%d RTCOMM_GET_VERSION\n", cgpid, 
+                                        cpid);
                         retval = copy_to_user((void __user *)arg, RTCOMM_VERSION, 
                                 sizeof(RTCOMM_VERSION));
 
@@ -712,6 +717,8 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
                 case RTCOMM_SET_SIZE: {
                         int     bytes;
 
+                        RTCOMM_NOT("ioctl(): %d:%d RTCOMM_SET_SIZE\n", cgpid, 
+                                        cpid);
                         retval = copy_from_user(&bytes, (void __user *)arg,
                                         sizeof(bytes));
 
@@ -728,6 +735,8 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
                         break;
                 }
                 case RTCOMM_INIT: {
+                        RTCOMM_NOT("ioctl(): %d:%d RTCOMM_INIT\n", cgpid, cpid);
+
                         retval = stop_sampling(state);
 
                         if (retval) {
@@ -743,16 +752,19 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
                         break;                                
                 }
                 case RTCOMM_START: {
+                        RTCOMM_NOT("ioctl(): %d:%d RTCOMM_START\n", cgpid, cpid);
                         retval = start_sampling(state);
 
                         break;
                 }
                 case RTCOMM_STOP: {
+                        RTCOMM_NOT("ioctl(): %d:%d RTCOMM_STOP\n", cgpid, cpid);
                         retval = stop_sampling(state);
 
                         break;
                 }
                 case RTCOMM_TERM: {
+                        RTCOMM_NOT("ioctl(): %d:%d RTCOMM_TERM\n", cgpid, cpid);
                         retval = stop_sampling(state);
 
                         if (retval) {
@@ -765,13 +777,16 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
                 case RTCOMM_GET_FIFO_PID: {
                         signed long long pid;
 
+                        RTCOMM_NOT("ioctl(): %d:%d RTCOMM_GET_FIFO_PID\n", cgpid, 
+                                        cpid);
+
                         if (!state->is_initialized) {
-                                retval = - EINVAL;
+                                retval = - ENODEV;
                                 break;
                         }
                         pid = state->thd_rtcomm_fifo_pid;
 
-                        retval = copy_to_user(&pid, (void __user *)arg, 
+                        retval = copy_to_user((void __user *)arg, &pid,
                                         sizeof(pid));
 
                         if (retval) {
@@ -781,6 +796,9 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
                         break;                        
                 }
                 default : {
+                        RTCOMM_ERR("ioctl(): %d:%d unknown IOCTL call.\n", cgpid,
+                                        cpid);
+
                         retval = -EINVAL;
                         break;
                 }     
