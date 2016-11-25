@@ -558,11 +558,17 @@ static void fifo_buff_recycle(struct fifo_buff * fifo_buff, void * storage)
 
 static void * fifo_buff_get(struct fifo_buff * fifo_buff)
 {
-        if (wait_for_completion_interruptible(&fifo_buff->put) != 0) {
+        int  status;
+
+        status = wait_for_completion_interruptible(&fifo_buff->put);
+
+        if (status == 0) {
+                return (fifo_buff->consumer);
+        } else {
+                RTCOMM_DBG("interrupted:\n");
+
                 return (NULL);
         }
-        
-        return (fifo_buff->consumer);
 }
 
 
