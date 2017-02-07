@@ -551,7 +551,7 @@ static void fifo_buff_recycle(struct fifo_buff * fifo_buff, void * storage)
          * read file operation. By doing this call at the end we disregard all
          * completions that might have happened during read operations.
          */
-        reinit_completion(&fifo_buff->put);
+        fifo_buff->put.done = 0;
 }
 
 
