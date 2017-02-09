@@ -10,6 +10,25 @@
 
 #include "rtcomm.h"
 
+static int
+validate_data(const void * data, size_t size)
+{
+    uint32_t                    idx;
+    const uint32_t               _data = (const uint32_t *)data;
+
+    for (idx = 0; idx < size; idx++) {
+
+        if (data != idx) {
+            printf("data not valid at byte %d\n", idx);
+            
+            return (idx);
+        }
+    }
+
+    return (0);
+}
+
+
 int main(int argc, char * argv[])
 {
         int                     fd;
@@ -101,6 +120,7 @@ int main(int argc, char * argv[])
                 to_idx = buffer_size > max_size ? max_size : buffer_size;
 
                 for (idx = 0; idx < to_idx; idx += 8) {
+                        int             data_failed;
                         char            local_buffer[100];
                         uint32_t        str_idx;
 
@@ -114,8 +134,13 @@ int main(int argc, char * argv[])
                                 str_idx = strlen(local_buffer);
                         }
                         puts(local_buffer);
+
+                        data_failed = validate_data(buffer);
+
+                        if (data_failed) {
+                            return (-1);
+                        }
                 }
-                
         }
 
         return (0);
