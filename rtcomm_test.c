@@ -10,11 +10,29 @@
 
 #include "rtcomm.h"
 
+#define ARRAY_SIZE(array)    (sizeof(array)/sizeof(array[0]))
+
+struct tests
+{
+    int                  (* validator)(const void *, size_t);
+    const char *            text;
+};
+
 static int
-validate_data(const void * data, size_t size)
+validate_test_0(const void * data, size_t size);
+
+static struct tests tests[] = {
+    {
+        validator = validate_test_0,
+        text = "all elements of array are 1...n",
+    },
+};
+
+static int
+validate_test_0(const void * data, size_t size)
 {
     uint32_t                    idx;
-    const uint32_t               _data = (const uint32_t *)data;
+    const uint32_t *            _data = (const uint32_t *)data;
 
     for (idx = 0; idx < size; idx++) {
 
@@ -29,6 +47,17 @@ validate_data(const void * data, size_t size)
 }
 
 
+static void
+print_tests(void)
+{
+    uint32_t                    idx;
+
+    for (idx = 0; idx < ARRAY_SIZE(tests); idx++) {
+        fprintf(stdout, "test %d: %s\n", idx, tests[idx].text);
+    }
+}
+
+
 int main(int argc, char * argv[])
 {
         int                     fd;
@@ -37,10 +66,21 @@ int main(int argc, char * argv[])
         int                     count;
         char                    version[20];
         char *                  buffer;
+        int                     use_test;
         
-        fprintf(stdout, "RTCOMM drv test 1, ver:" __DATE__ " : " __TIME__ "\n");
+        fprintf(stdout, "RTCOMM drv test 2, ver:" __DATE__ " : " __TIME__ "\n");
+
+        use_test = -1;
 
         switch (argc) {
+                case 4: 
+                        if (argv[3][0] == 't') {
+                            use_test = atoi(argv[3][1]);
+
+                            if (use_test < 0) {
+                                use_test = ARRAY_SIZE(tests);
+                            }
+                        }
                 case 3: max_size = atoi(argv[2]);
                 case 2:
                         buffer_size = atoi(argv[1]);
@@ -48,12 +88,23 @@ int main(int argc, char * argv[])
                 case 1:
                         break;
                 default:
-                        fprintf(stderr, "Usage rtcomm_test [buffer_size] [max_print_size]\n");
+                        fprintf(stderr, "Usage rtcomm_test [buffer_size] [max_print_size] t[n]\n");
 
                         return (1);
         }
         fprintf(stdout, "Using buffer size %d bytes\n", buffer_size);
         fprintf(stdout, "Using max print size %d bytes\n", max_size);
+
+        if (use_test >= ARRAY_SIZE(tests)) {
+            fprintf(stderr, "Test index is out of range, valid is [0-%d]\n",
+                ARRAY_SIZE(tests) - 1);
+            print_tests();
+
+            return (1);
+        }
+
+        if (use_test != -1)
+            fprintf(stdout, "Validating data using test %d\n", use_test);
 
         buffer = malloc(buffer_size);
 
@@ -135,7 +186,7 @@ int main(int argc, char * argv[])
                         }
                         puts(local_buffer);
 
-                        data_failed = validate_data(buffer);
+                        data_failed = validate_test_0(buffer);
 
                         if (data_failed) {
                             return (-1);
