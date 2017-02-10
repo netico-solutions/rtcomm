@@ -30,8 +30,8 @@
 
 #define RTCOMM_LOG_LEVEL                LOG_LEVEL_WRN
 #define RTCOMM_BUILD_TIME               "12:00"
-#define RTCOMM_BUILD_DATE               "2016-04-28"
-#define RTCOMM_BUILD_VER                "v1.0"
+#define RTCOMM_BUILD_DATE               "2017-02-10"
+#define RTCOMM_BUILD_VER                "v1.1"
 #define RTCOMM_VERSION                  RTCOMM_BUILD_VER " - " RTCOMM_BUILD_DATE
 
 #define LOG_LEVEL_ERR                   0
@@ -45,7 +45,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_INF(msg, ...)                                                    \
         do {                                                                    \
-                if (g_arg_log_level >= LOG_LEVEL_INF) {                         \
+                if (log_level >= LOG_LEVEL_INF) {                               \
                         printk(KERN_INFO RTCOMM_NAME " info: " msg,             \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -53,7 +53,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_NOT(msg, ...)                                                    \
         do {                                                                    \
-                if (g_arg_log_level >= LOG_LEVEL_NOT) {                         \
+                if (log_level >= LOG_LEVEL_NOT) {                               \
                         printk(KERN_NOTICE  RTCOMM_NAME ": " msg,               \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -61,7 +61,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_WRN(msg, ...)                                                    \
         do {                                                                    \
-                if (g_arg_log_level >= LOG_LEVEL_WRN) {                         \
+                if (log_level >= LOG_LEVEL_WRN) {                               \
                         printk(KERN_WARNING RTCOMM_NAME " warning: " msg,       \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -69,7 +69,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_DBG(msg, ...)                                                    \
         do {                                                                    \
-                if (g_arg_log_level >= LOG_LEVEL_DBG) {                         \
+                if (log_level >= LOG_LEVEL_DBG) {                               \
                         printk(KERN_DEFAULT RTCOMM_NAME " debug: " msg,         \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -148,21 +148,17 @@ static uint32_t fifo_buff_size(struct fifo_buff * fifo_buff);
 static int rtcomm_fifo(void * data);
 
 /*--  Module parameters  -----------------------------------------------------*/
-static int g_arg_bus_id = -1;
-module_param(g_arg_bus_id, int, S_IRUGO);
-MODULE_PARM_DESC(g_arg_bus_id, "SPI bus ID");
+static int bus_id = -1;
+module_param(bus_id, int, S_IRUGO);
+MODULE_PARM_DESC(bus_id, "SPI bus ID");
 
-static int g_arg_notify_pin_id = -1;
-module_param(g_arg_notify_pin_id, int, S_IRUGO);
-MODULE_PARM_DESC(g_arg_notify_pin_id, "notification GPIO pin ID");
+static int notify_id = -1;
+module_param(notify_id, int, S_IRUGO);
+MODULE_PARM_DESC(notify_id, "notification GPIO pin ID");
 
-static int g_arg_buffer_size_bytes = -1;
-module_param(g_arg_buffer_size_bytes, int, S_IRUGO);
-MODULE_PARM_DESC(g_arg_buffer_size_bytes, "buffer size in bytes");
-
-static int g_arg_log_level = 4;
-module_param(g_arg_log_level, int, S_IRUGO);
-MODULE_PARM_DESC(g_arg_log_level, "log level [0 - 4]");
+static int log_level = 4;
+module_param(log_level, int, S_IRUGO);
+MODULE_PARM_DESC(log_level, "log level [0 - 4]");
 
 
 
@@ -190,10 +186,10 @@ static struct rtcomm_config     g_pending_config;
 
 static void config_init_pending(void)
 {
-        g_pending_config.notify_pin_id          = g_arg_notify_pin_id;
-        g_pending_config.spi_bus_id             = g_arg_bus_id;
+        g_pending_config.notify_pin_id          = notify_id;
+        g_pending_config.spi_bus_id             = bus_id;
         g_pending_config.spi_bus_speed          = 20000000ul;
-        g_pending_config.buffer_size_bytes      = g_arg_buffer_size_bytes;
+        g_pending_config.buffer_size_bytes      = 0;
 }
 
 /*--  Misc  ------------------------------------------------------------------*/
