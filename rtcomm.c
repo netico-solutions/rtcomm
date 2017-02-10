@@ -160,7 +160,7 @@ static int g_arg_buffer_size_bytes = -1;
 module_param(g_arg_buffer_size_bytes, int, S_IRUGO);
 MODULE_PARM_DESC(g_arg_buffer_size_bytes, "buffer size in bytes");
 
-static int g_arg_log_level = -1;
+static int g_arg_log_level = 4;
 module_param(g_arg_log_level, int, S_IRUGO);
 MODULE_PARM_DESC(g_arg_log_level, "log level [0 - 4]");
 
@@ -370,10 +370,14 @@ static int start_sampling(struct rtcomm_state * state)
         int                     ret;
        
         if (!state->is_initialized) {
+                RTCOMM_ERR("start_sampling(): sampling was not initialized");
+
                 return (-EFAULT);
         }
 
         if (state->is_running) {
+                RTCOMM_ERR("start_sampling(): sampling is busy");
+
                 return (-EBUSY);
         }
         RTCOMM_DBG("start_sampling()");

@@ -23,8 +23,8 @@ validate_test_0(const void * data, size_t size);
 
 static struct tests tests[] = {
     {
-        validator = validate_test_0,
-        text = "all elements of array are 1...n",
+        .validator = validate_test_0,
+        .text = "all elements of array are 1...n",
     },
 };
 
@@ -36,7 +36,7 @@ validate_test_0(const void * data, size_t size)
 
     for (idx = 0; idx < size; idx++) {
 
-        if (data != idx) {
+        if (_data[idx] != idx) {
             printf("data not valid at byte %d\n", idx);
             
             return (idx);
@@ -50,11 +50,11 @@ validate_test_0(const void * data, size_t size)
 static void
 print_tests(void)
 {
-    uint32_t                    idx;
+        uint32_t                idx;
 
-    for (idx = 0; idx < ARRAY_SIZE(tests); idx++) {
-        fprintf(stdout, "test %d: %s\n", idx, tests[idx].text);
-    }
+        for (idx = 0; idx < ARRAY_SIZE(tests); idx++) {
+                fprintf(stdout, "test %d: %s\n", idx, tests[idx].text);
+        }
 }
 
 
@@ -75,7 +75,7 @@ int main(int argc, char * argv[])
         switch (argc) {
                 case 4: 
                         if (argv[3][0] == 't') {
-                            use_test = atoi(argv[3][1]);
+                            use_test = atoi(&argv[3][1]);
 
                             if (use_test < 0) {
                                 use_test = ARRAY_SIZE(tests);
@@ -97,7 +97,7 @@ int main(int argc, char * argv[])
 
         if (use_test >= ARRAY_SIZE(tests)) {
             fprintf(stderr, "Test index is out of range, valid is [0-%d]\n",
-                ARRAY_SIZE(tests) - 1);
+                (int)ARRAY_SIZE(tests) - 1);
             print_tests();
 
             return (1);
@@ -141,6 +141,14 @@ int main(int argc, char * argv[])
                 return (1);
         } else {
                 fprintf(stdout, "RTCOMM_SET_SIZE set: %d\n", buffer_size);
+        }
+        
+        if (ioctl(fd, RTCOMM_INIT)) {
+                fprintf(stderr, "RTCOMM_INIT failed: %d\n", errno);
+
+                return (1);
+        } else {
+                fprintf(stdout, "RTCOMM_INIT success.\n");
         }
 
         if (ioctl(fd, RTCOMM_START)) {
@@ -186,7 +194,8 @@ int main(int argc, char * argv[])
                         }
                         puts(local_buffer);
 
-                        data_failed = validate_test_0(buffer);
+                        data_failed = tests[use_test].validator(buffer, 
+                                buffer_size);
 
                         if (data_failed) {
                             return (-1);
