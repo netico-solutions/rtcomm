@@ -148,19 +148,21 @@ static uint32_t fifo_buff_size(struct fifo_buff * fifo_buff);
 static int rtcomm_fifo(void * data);
 
 /*--  Module parameters  -----------------------------------------------------*/
-static int bus_id = -1;
-module_param(bus_id, int, S_IRUGO);
-MODULE_PARM_DESC(bus_id, "SPI bus ID");
+static int busid = -1;
+module_param(busid, int, S_IRUGO);
+MODULE_PARM_DESC(busid, "SPI bus ID");
 
-static int notify_id = -1;
-module_param(notify_id, int, S_IRUGO);
-MODULE_PARM_DESC(notify_id, "notification GPIO pin ID");
+static int busspeed = 1000000;
+module_param(busspeed, int, S_IRUGO);
+MODULE_PARM_DESC(busspeed, "SPI bus speed");
+
+static int notifyid = -1;
+module_param(notifyid, int, S_IRUGO);
+MODULE_PARM_DESC(notifyid, "notification GPIO pin ID");
 
 static int log_level = 4;
 module_param(log_level, int, S_IRUGO);
 MODULE_PARM_DESC(log_level, "log level [0 - 4]");
-
-
 
 static const struct file_operations g_rtcomm_fops = 
 {
@@ -186,9 +188,9 @@ static struct rtcomm_config     g_pending_config;
 
 static void config_init_pending(void)
 {
-        g_pending_config.notify_pin_id          = notify_id;
-        g_pending_config.spi_bus_id             = bus_id;
-        g_pending_config.spi_bus_speed          = 20000000ul;
+        g_pending_config.notify_pin_id          = notifyid;
+        g_pending_config.spi_bus_id             = busid;
+        g_pending_config.spi_bus_speed          = busspeed;
         g_pending_config.buffer_size_bytes      = 0;
 }
 
