@@ -32,18 +32,18 @@ static int
 validate_test_0(const void * data, size_t size)
 {
     uint32_t                    idx;
-    const uint32_t *            _data = (const uint32_t *)data;
+    const uint8_t *            _data = (const uint8_t *)data;
 
     for (idx = 0; idx < size; idx++) {
 
-        if (_data[idx] != idx) {
+        if (_data[idx] != (uint8_t)(idx & 0xf)) {
             printf("data not valid at byte %d\n", idx);
             
             return (idx);
         }
     }
 
-    return (0);
+    return (-1);
 }
 
 
@@ -95,7 +95,7 @@ int main(int argc, char * argv[])
         fprintf(stdout, "Using buffer size %d bytes\n", buffer_size);
         fprintf(stdout, "Using max print size %d bytes\n", max_size);
 
-        if (use_test >= ARRAY_SIZE(tests)) {
+        if (use_test >= (int)ARRAY_SIZE(tests)) {
             fprintf(stderr, "Test index is out of range, valid is [0-%d]\n",
                 (int)ARRAY_SIZE(tests) - 1);
             print_tests();
@@ -174,7 +174,8 @@ int main(int argc, char * argv[])
 
                         return (-1);
                 } 
-                fprintf(stdout, " %05d: read %d bytes\n", count++, buffer_size);
+                fprintf(stdout, "pass %05d: read %d bytes\n", count++, 
+                        buffer_size);
 
                 to_idx = buffer_size > max_size ? max_size : buffer_size;
 
@@ -194,11 +195,13 @@ int main(int argc, char * argv[])
                         }
                         puts(local_buffer);
 
-                        data_failed = tests[use_test].validator(buffer, 
-                                buffer_size);
+                        if (use_test != -1) {
+                            data_failed = tests[use_test].validator(buffer, 
+                                    buffer_size);
 
-                        if (data_failed) {
-                            return (-1);
+                            if (data_failed != -1) {
+                                return (1);
+                            }
                         }
                 }
         }
