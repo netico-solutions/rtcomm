@@ -45,7 +45,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_INF(msg, ...)                                                    \
         do {                                                                    \
-                if (log_level >= LOG_LEVEL_INF) {                               \
+                if (loglevel >= LOG_LEVEL_INF) {                               \
                         printk(KERN_INFO RTCOMM_NAME " info: " msg,             \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -53,7 +53,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_NOT(msg, ...)                                                    \
         do {                                                                    \
-                if (log_level >= LOG_LEVEL_NOT) {                               \
+                if (loglevel >= LOG_LEVEL_NOT) {                               \
                         printk(KERN_NOTICE  RTCOMM_NAME ": " msg,               \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -61,7 +61,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_WRN(msg, ...)                                                    \
         do {                                                                    \
-                if (log_level >= LOG_LEVEL_WRN) {                               \
+                if (loglevel >= LOG_LEVEL_WRN) {                               \
                         printk(KERN_WARNING RTCOMM_NAME " warning: " msg,       \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -69,7 +69,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_DBG(msg, ...)                                                    \
         do {                                                                    \
-                if (log_level >= LOG_LEVEL_DBG) {                               \
+                if (loglevel >= LOG_LEVEL_DBG) {                               \
                         printk(KERN_DEFAULT RTCOMM_NAME " debug: " msg,         \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -154,15 +154,15 @@ MODULE_PARM_DESC(busid, "SPI bus ID");
 
 static int busspeed = 1000000;
 module_param(busspeed, int, S_IRUGO);
-MODULE_PARM_DESC(busspeed, "SPI bus speed");
+MODULE_PARM_DESC(busspeed, "SPI bus speed [Hz]");
 
 static int notifyid = -1;
 module_param(notifyid, int, S_IRUGO);
 MODULE_PARM_DESC(notifyid, "notification GPIO pin ID");
 
-static int log_level = 4;
-module_param(log_level, int, S_IRUGO);
-MODULE_PARM_DESC(log_level, "log level [0 - 4]");
+static int loglevel = 4;
+module_param(loglevel, int, S_IRUGO);
+MODULE_PARM_DESC(loglevel, "log level [0 - 4]");
 
 static const struct file_operations g_rtcomm_fops = 
 {
