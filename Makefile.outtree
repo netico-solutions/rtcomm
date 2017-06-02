@@ -6,27 +6,12 @@
 obj-m += rtcomm.o
 
 
-all: rtcomm_test rtcomm_ipc_size rtcomm_ipc_test
-	make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -C $(URTU_LINUX_SRC) M=$(PWD) modules
+all: 
+	make ARCH=arm CROSS_COMPILE=arm-eabih- -C $(LINUX_SRC) M=$(PWD) modules
 
 clean:
-	make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -C $(URTU_LINUX_SRC) M=$(PWD) clean
-	rm rtcomm_test
-	rm rtcomm_ipc_size
-	rm rtcomm_ipc_test
+	make ARCH=arm CROSS_COMPILE=arm-eabih- -C $(LINUX_SRC) M=$(PWD) clean
 
-rtcomm_test: rtcomm_test.c
-	arm-linux-gnueabihf-gcc -o rtcomm_test rtcomm_test.c
-
-rtcomm_ipc_size: rtcomm_ipc_size.c
-	arm-linux-gnueabihf-gcc -o rtcomm_ipc_size rtcomm_ipc_size.c
-
-rtcomm_ipc_test: rtcomm_ipc_test.c
-	arm-linux-gnueabihf-gcc -o rtcomm_ipc_test rtcomm_ipc_test.c
-
-
-deploy: all 
-	@scp rtcomm.ko rtcomm_test rtcomm_ipc_size rtcomm_ipc_test root@netico-urtu:
 
 ifndef URTU_LINUX_SRC
 	$(error LINUX_SRC variable is not set)
