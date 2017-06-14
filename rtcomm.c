@@ -103,7 +103,7 @@ struct rtcomm_state
         bool                    is_busy;
         bool                    is_initialized;
         bool                    is_running;
-        bool                    should_exit;
+        volatile bool           should_exit;
 
         struct rtcomm_perf
         {
