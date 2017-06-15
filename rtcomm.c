@@ -12,26 +12,27 @@
  * processor.
  */
 
-#include <linux/spi/spi.h>
-#include <linux/gpio.h>
-#include <linux/module.h>
-#include <linux/interrupt.h>
-#include <linux/moduleparam.h>
-#include <linux/miscdevice.h>
-#include <linux/device.h>
-#include <linux/slab.h>
-#include <linux/kernel.h>
-#include <linux/kthread.h>
 #include <linux/fs.h>
-#include <linux/semaphore.h>
+#include <linux/slab.h>
+#include <linux/gpio.h>
 #include <asm/uaccess.h>
+#include <linux/kernel.h>
+#include <linux/device.h>
+#include <linux/module.h>
+#include <linux/kthread.h>
+#include <linux/spi/spi.h>
+#include <linux/interrupt.h>
+#include <linux/semaphore.h>
+#include <linux/completion.h>
+#include <linux/miscdevice.h>
+#include <linux/moduleparam.h>
 
 #include "rtcomm.h"
 
 #define RTCOMM_LOG_LEVEL                LOG_LEVEL_WRN
 #define RTCOMM_BUILD_TIME               "12:00"
-#define RTCOMM_BUILD_DATE               "2017-02-10"
-#define RTCOMM_BUILD_VER                "v1.1"
+#define RTCOMM_BUILD_DATE               "2017-06-10"
+#define RTCOMM_BUILD_VER                "v1.2"
 #define RTCOMM_VERSION                  RTCOMM_BUILD_VER " - " RTCOMM_BUILD_DATE
 
 #define LOG_LEVEL_ERR                   0
