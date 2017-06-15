@@ -46,7 +46,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_INF(msg, ...)                                                    \
         do {                                                                    \
-                if (loglevel >= LOG_LEVEL_INF) {                               \
+                if (loglevel >= LOG_LEVEL_INF) {                                \
                         printk(KERN_INFO RTCOMM_NAME " info: " msg,             \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -54,7 +54,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_NOT(msg, ...)                                                    \
         do {                                                                    \
-                if (loglevel >= LOG_LEVEL_NOT) {                               \
+                if (loglevel >= LOG_LEVEL_NOT) {                                \
                         printk(KERN_NOTICE  RTCOMM_NAME ": " msg,               \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -62,7 +62,7 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_WRN(msg, ...)                                                    \
         do {                                                                    \
-                if (loglevel >= LOG_LEVEL_WRN) {                               \
+                if (loglevel >= LOG_LEVEL_WRN) {                                \
                         printk(KERN_WARNING RTCOMM_NAME " warning: " msg,       \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
@@ -70,16 +70,13 @@ printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);
 
 #define RTCOMM_DBG(msg, ...)                                                    \
         do {                                                                    \
-                if (loglevel >= LOG_LEVEL_DBG) {                               \
+                if (loglevel >= LOG_LEVEL_DBG) {                                \
                         printk(KERN_DEFAULT RTCOMM_NAME " debug: " msg,         \
                                 ## __VA_ARGS__);                                \
                 }                                                               \
         } while (0)
 
-
 struct fifo_buff;
-
-
 
 struct rtcomm_config
 {
@@ -87,9 +84,8 @@ struct rtcomm_config
         int                     spi_bus_id;
         int                     spi_bus_speed;
         int                     buffer_size_bytes;
+        int                     fifo_buffers;
 };
-
-
 
 struct rtcomm_state 
 {
@@ -114,8 +110,6 @@ struct rtcomm_state
         }                       perf;              
 };
 
-
-
 struct fifo_buff
 {
         void **                 storage;
@@ -129,14 +123,16 @@ struct fifo_buff
         struct semaphore        spaces;
 };
 
-static int rtcomm_open(struct inode * inode, struct file * fd);
-static int rtcomm_release(struct inode * inode, struct file * fd);
-static ssize_t rtcomm_read(struct file * fd, char __user *, size_t, loff_t *);
-static long rtcomm_ioctl(struct file *, unsigned int, unsigned long);
+static int      rtcomm_open(struct inode * inode, struct file * fd);
+static int      rtcomm_release(struct inode * inode, struct file * fd);
+static ssize_t  rtcomm_read(struct file * fd, char __user *, size_t, loff_t *);
+static long     rtcomm_ioctl(struct file *, unsigned int, unsigned long);
 
-static irqreturn_t trigger_notify_handler(int irq, void * p);
+static irqreturn_t 
+                trigger_notify_handler(int irq, void * p);
 
-static struct fifo_buff * fifo_buff_init(uint32_t size, uint32_t package_size);
+static struct fifo_buff * 
+                fifo_buff_init(uint32_t size, uint32_t package_size);
 static void     fifo_buff_term(struct fifo_buff * fifo_buff);
 static void *   fifo_buff_create(struct fifo_buff * fifo_buff);
 static void     fifo_buff_delete(struct fifo_buff * fifo_buff, void * storage);
@@ -144,7 +140,7 @@ static void *   fifo_buff_get(struct fifo_buff * fifo_buff);
 static int      fifo_buff_put(struct fifo_buff * fifo_buff, void * storage);
 static uint32_t fifo_buff_package_size(struct fifo_buff * fifo_buff);
 
-static int rtcomm_fifo(void * data);
+static int      rtcomm_fifo(void * data);
 
 /*--  Module parameters  -----------------------------------------------------*/
 static int busid = -1;
@@ -162,6 +158,10 @@ MODULE_PARM_DESC(notifyid, "notification GPIO pin ID");
 static int loglevel = 4;
 module_param(loglevel, int, S_IRUGO);
 MODULE_PARM_DESC(loglevel, "log level [0 - 4]");
+
+static int fifosize = 30;
+module_param(fifosize, int, S_IRUGO);
+MODULE_PARM_DESC(fifosize, "number of buffers in FIFO");
 
 static const struct file_operations g_rtcomm_fops = 
 {
@@ -182,7 +182,6 @@ static struct miscdevice        g_rtcomm_miscdev =
 static struct rtcomm_state      g_state;
 static struct rtcomm_config     g_pending_config;
 
-
 /*--  Driver configuration  --------------------------------------------------*/
 
 static void config_init_pending(void)
@@ -191,25 +190,146 @@ static void config_init_pending(void)
         g_pending_config.spi_bus_id             = busid;
         g_pending_config.spi_bus_speed          = busspeed;
         g_pending_config.buffer_size_bytes      = 0;
+        g_pending_config.fifo_buffers           = fifosize;
+}
+
+/*--  FIFO_BUFF  -------------------------------------------------------------*/
+
+static struct fifo_buff * fifo_buff_init(uint32_t size, uint32_t package_size)
+{
+        struct fifo_buff * fifo_buff;
+
+        fifo_buff = kmalloc(sizeof(struct fifo_buff), GFP_KERNEL);
+        RTCOMM_DBG("init fifo_buff: %p, size: %d of %d bytes\n", fifo_buff, 
+                size, package_size);
+
+        if (!fifo_buff) {
+                RTCOMM_ERR("failed to create fifo_buff\n");
+                goto ERR_MALLOC_FIFO_BUFF;
+        }
+        fifo_buff->storage = kmalloc(sizeof(void *) * size, GFP_KERNEL);
+        
+        if (!fifo_buff->storage) {
+                RTCOMM_ERR("failed to create fifo_buff pointer storage\n");
+                goto ERR_MALLOC_STORAGE;
+        }
+        fifo_buff->head = 0;
+        fifo_buff->tail = 0;
+        fifo_buff->free = size;
+        fifo_buff->size = size;
+        fifo_buff->package_size = package_size;
+        mutex_init(&fifo_buff->mutex);
+        sema_init(&fifo_buff->items, 0);
+        sema_init(&fifo_buff->spaces, size);
+        
+        return (fifo_buff);
+ERR_MALLOC_STORAGE:
+        kfree(fifo_buff);
+ERR_MALLOC_FIFO_BUFF:
+        return (NULL);
+}
+
+static void fifo_buff_term(struct fifo_buff * fifo_buff)
+{
+        kfree(fifo_buff->storage);
+        kfree(fifo_buff);
+}
+
+static void * fifo_buff_create(struct fifo_buff * fifo_buff)
+{
+        return (kmalloc(fifo_buff->package_size, GFP_KERNEL));
+}
+
+static void fifo_buff_delete(struct fifo_buff * fifo_buff, void * storage)
+{
+        (void)fifo_buff;
+        
+        kfree(storage);
+}
+
+static void * fifo_buff_get(struct fifo_buff * fifo_buff)
+{
+        int status;
+        void * item;
+
+        status = down_interruptible(&fifo_buff->items);
+        
+        if (status == -EINTR) {
+                RTCOMM_DBG("fifo_buff: get(): interrupted\n");
+                goto ERR_EINTR_ITEMS;
+        }
+        status = mutex_lock_interruptible(&fifo_buff->mutex);
+        
+        if (status == -EINTR) {
+                RTCOMM_DBG("fifo_buff: get(): interrupted\n");
+                goto ERR_EINTR_MUTEX;
+        }
+        /* --- Get item --- */
+        item = fifo_buff->storage[fifo_buff->tail++];
+        
+        if (fifo_buff->tail == fifo_buff->size) {
+                fifo_buff->tail = 0i;
+        }
+        fifo_buff->free++;
+        
+        mutex_unlock(&fifo_buff->mutex);
+        up(&fifo_buff->spaces);
+        
+        return (item);
+ERR_EINTR_MUTEX:
+ERR_EINTR_ITEMS:
+        return (NULL);
+}
+
+static int fifo_buff_put(struct fifo_buff * fifo_buff, void * storage)
+{
+        int status;
+        
+        status = down_interruptible(&fifo_buff->spaces);
+        
+        if (status == -EINTR) {
+                RTCOMM_DBG("fifo_buff: put(): interrupted\n");
+                goto ERR_EINTR_SPACES;
+        }
+        status = mutex_lock_interruptible(&fifo_buff->mutex);
+        
+        if (status == -EINTR) {
+                RTCOMM_DBG("fifo_buff: put(): interrupted\n");
+                goto ERR_EINTR_MUTEX;
+        }
+        /* --- Put item --- */
+        fifo_buff->storage[fifo_buff->head++] = storage;
+
+        if (fifo_buff->head == fifo_buff->size) {
+                fifo_buff->head = 0u;
+        }
+        fifo_buff->free--;
+        
+        mutex_unlock(&fifo_buff->mutex);
+        up(&fifo_buff->items);
+        
+        return (0);
+ERR_EINTR_MUTEX:
+ERR_EINTR_SPACES:
+        return (-EINTR);
+}
+
+static uint32_t fifo_buff_package_size(struct fifo_buff * fifo_buff)
+{
+        return (fifo_buff->package_size);
 }
 
 /*--  Misc  ------------------------------------------------------------------*/
-
-
 
 static struct rtcomm_state * state_from_fd(struct file * fd)
 {
         return (fd->private_data);
 }
 
-
-
 static void state_to_fd(struct file * fd, struct rtcomm_state * state)
 {
         fd->private_data = state;
 }
-
-
 
 static int init_sampling(struct rtcomm_state * state, 
                 const struct rtcomm_config * config)
@@ -285,7 +405,9 @@ static int init_sampling(struct rtcomm_state * state,
          * Setup FIFO buffer
          */
         RTCOMM_DBG("setup FIFO buffer\n");
-        state->fifo_buff = fifo_buff_init(10, config->buffer_size_bytes);
+        state->fifo_buff = fifo_buff_init(config->fifo_buffers, 
+                                          config->buffer_size_bytes + 
+                                          sizeof(struct rtcomm_packet_header));
         
         if (!state->fifo_buff) {
                 RTCOMM_ERR("fifo_buff_init() init failed.\n");
@@ -343,8 +465,6 @@ FAIL_MASTER:
         return (ret);
 }
 
-
-
 static int term_sampling(struct rtcomm_state * state) 
 {
         if (!state->is_initialized) {
@@ -363,8 +483,6 @@ static int term_sampling(struct rtcomm_state * state)
         
         return (0);
 }
-
-
 
 static int start_sampling(struct rtcomm_state * state)
 {
@@ -405,8 +523,6 @@ FAIL_GPIO_ISR_REQUEST:
         return (ret);
 }
 
-
-
 static int stop_sampling(struct rtcomm_state * state)
 {
         if (!state->is_running) {
@@ -422,8 +538,6 @@ static int stop_sampling(struct rtcomm_state * state)
 
 /*--  FIFO producer thread  --------------------------------------------------*/
 
-
-
 static int rtcomm_fifo(void * data)
 {
         struct rtcomm_state *   state = data;
@@ -431,6 +545,8 @@ static int rtcomm_fifo(void * data)
         int                     retval;
         static struct spi_message message;
         static struct spi_transfer transfer;
+        struct timeval          timeval;
+        struct rtcomm_packet *  packet;
         
         RTCOMM_NOT("rtcomm_fifo(): %d:%d\n", current->group_leader->pid, 
                         current->pid);
@@ -448,8 +564,6 @@ static int rtcomm_fifo(void * data)
         spi_bus_lock(state->spi->master);
         
         for (;;) {
-                void *          storage;
-                
                 state->is_read_pending = false;
                 wait_for_completion(&state->isr_signal);
                 state->is_read_pending = true;
@@ -457,175 +571,30 @@ static int rtcomm_fifo(void * data)
                 if (state->should_exit) {
                         break;                        
                 }
-                storage = fifo_buff_create(state->fifo_buff);
+                packet = fifo_buff_create(state->fifo_buff);
+                do_gettimeofday(&timeval);
+                packet->header.tv_sec = timeval.tv_sec;
+                packet->header.tv_msec = timeval.tv_usec / 1000;
                 memset(&transfer, 0, sizeof(transfer));
-                transfer.rx_buf = storage;
-                transfer.len    = fifo_buff_package_size(state->fifo_buff);
+                transfer.rx_buf = &packet->data[0];
+                transfer.len    = state->config.buffer_size_bytes;
                 spi_message_init(&message);
                 spi_message_add_tail(&transfer, &message);
                 spi_sync_locked(state->spi, &message);
                 
-                if (fifo_buff_put(state->fifo_buff, storage)) {
+                if (fifo_buff_put(state->fifo_buff, packet)) {
                         break;
                 }
         }
-        RTCOMM_NOT("rtcomm_fifo(): exiting\n");
         spi_bus_unlock(state->spi->master);
         complete(&state->exit_signal);
+        RTCOMM_NOT("rtcomm_fifo(): exiting\n");
         do_exit(0);
         
         return (0);
 }
 
-/*--  PPBUF  -----------------------------------------------------------------*/
-
-
-
-/* NOTE:
- * FIFO buffers are currently organized as ping-pong buffers which implies that
- * only two buffers are used. If a need should arise then we will make true
- * FIFO buffer.
- */
-static struct fifo_buff * fifo_buff_init(uint32_t size, uint32_t package_size)
-{
-        struct fifo_buff * fifo_buff;
-
-        fifo_buff = kmalloc(sizeof(struct fifo_buff), GFP_KERNEL);
-        RTCOMM_DBG("init fifo_buff: %p, size: %d of %d bytes\n", fifo_buff, 
-                size, package_size);
-
-        if (!fifo_buff) {
-                RTCOMM_ERR("failed to create fifo_buff\n");
-                goto ERR_MALLOC_FIFO_BUFF;
-        }
-        fifo_buff->storage = kmalloc(sizeof(void *) * size, GFP_KERNEL);
-        
-        if (!fifo_buff->storage) {
-                RTCOMM_ERR("failed to create fifo_buff pointer storage\n");
-                goto ERR_MALLOC_STORAGE;
-        }
-        fifo_buff->head = 0;
-        fifo_buff->tail = 0;
-        fifo_buff->free = size;
-        fifo_buff->size = size;
-        fifo_buff->package_size = package_size;
-        mutex_init(&fifo_buff->mutex);
-        sema_init(&fifo_buff->items, 0);
-        sema_init(&fifo_buff->spaces, size);
-        
-        return (fifo_buff);
-ERR_MALLOC_STORAGE:
-        kfree(fifo_buff);
-ERR_MALLOC_FIFO_BUFF:
-        return (NULL);
-}
-
-
-
-static void fifo_buff_term(struct fifo_buff * fifo_buff)
-{
-        kfree(fifo_buff->storage);
-        kfree(fifo_buff);
-}
-
-
-
-static void * fifo_buff_create(struct fifo_buff * fifo_buff)
-{
-        return (kmalloc(fifo_buff->package_size, GFP_KERNEL));
-}
-
-
-
-static void fifo_buff_delete(struct fifo_buff * fifo_buff, void * storage)
-{
-        (void)fifo_buff;
-        
-        kfree(storage);
-}
-
-
-
-static void * fifo_buff_get(struct fifo_buff * fifo_buff)
-{
-        int status;
-        void * item;
-
-        status = down_interruptible(&fifo_buff->items);
-        
-        if (status == -EINTR) {
-                RTCOMM_DBG("fifo_buff: get(): interrupted\n");
-                goto ERR_EINTR_ITEMS;
-        }
-        status = mutex_lock_interruptible(&fifo_buff->mutex);
-        
-        if (status == -EINTR) {
-                RTCOMM_DBG("fifo_buff: get(): interrupted\n");
-                goto ERR_EINTR_MUTEX;
-        }
-        /* --- Get item --- */
-        item = fifo_buff->storage[fifo_buff->tail++];
-        
-        if (fifo_buff->tail == fifo_buff->size) {
-                fifo_buff->tail = 0i;
-        }
-        fifo_buff->free++;
-        
-        mutex_unlock(&fifo_buff->mutex);
-        up(&fifo_buff->spaces);
-        
-        return (item);
-ERR_EINTR_MUTEX:
-ERR_EINTR_ITEMS:
-        return (NULL);
-}
-
-
-
-static int fifo_buff_put(struct fifo_buff * fifo_buff, void * storage)
-{
-        int status;
-        
-        status = down_interruptible(&fifo_buff->spaces);
-        
-        if (status == -EINTR) {
-                RTCOMM_DBG("fifo_buff: put(): interrupted\n");
-                goto ERR_EINTR_SPACES;
-        }
-        status = mutex_lock_interruptible(&fifo_buff->mutex);
-        
-        if (status == -EINTR) {
-                RTCOMM_DBG("fifo_buff: put(): interrupted\n");
-                goto ERR_EINTR_MUTEX;
-        }
-        /* --- Put item --- */
-        fifo_buff->storage[fifo_buff->head++] = storage;
-
-        if (fifo_buff->head == fifo_buff->size) {
-                fifo_buff->head = 0u;
-        }
-        fifo_buff->free--;
-        
-        mutex_unlock(&fifo_buff->mutex);
-        up(&fifo_buff->items);
-        
-        return (0);
-ERR_EINTR_MUTEX:
-ERR_EINTR_SPACES:
-        return (-EINTR);
-}
-
-
-
-static uint32_t fifo_buff_package_size(struct fifo_buff * fifo_buff)
-{
-        return (fifo_buff->package_size);
-}
-
-
 /*--  Notify handler  --------------------------------------------------------*/
-
-
 
 static irqreturn_t trigger_notify_handler(int irq, void * p)
 {
@@ -642,15 +611,13 @@ static irqreturn_t trigger_notify_handler(int irq, void * p)
 }
 
 
-/*--  FOPS  ------------------------------------------------------------------*/
-
-
+/*--  fops  ------------------------------------------------------------------*/
 
 static ssize_t rtcomm_read(struct file * fd, char __user * buff, 
                 size_t byte_count, loff_t * off)
 {
         struct rtcomm_state *   state = state_from_fd(fd);
-        void *                  storage;
+        void *                  packet;
         ssize_t                 retval;
 
         /* NOTE:
@@ -662,32 +629,33 @@ static ssize_t rtcomm_read(struct file * fd, char __user * buff,
         if (!state->is_initialized) {
                 return (-ENODEV);
         }
-        storage = fifo_buff_get(state->fifo_buff);
+        if (byte_count != fifo_buff_package_size(state->fifo_buff)) {
+                return (-EINVAL);
+        }
+        packet = fifo_buff_get(state->fifo_buff);
         
-        if (!storage) {
+        if (!packet) {
                 RTCOMM_NOT("read(): aborted\n");
                 retval = -ENOMEM;
 
                 goto FAIL_GET_STORAGE;
         }
         
-        if (copy_to_user(buff, storage, byte_count)) {
+        if (copy_to_user(buff, packet, byte_count)) {
                 RTCOMM_ERR("read(): failed to copy data to user-space\n");
                 retval = -EFAULT;
 
                 goto FAIL_COPY_TO_USER;
         }
-        fifo_buff_delete(state->fifo_buff, storage);
+        fifo_buff_delete(state->fifo_buff, packet);
         
         return (byte_count);
 FAIL_COPY_TO_USER:
-        fifo_buff_delete(state->fifo_buff, storage);
+        fifo_buff_delete(state->fifo_buff, packet);
 FAIL_GET_STORAGE:
 
         return (retval);
 }
-
-
 
 static int rtcomm_open(struct inode * inode, struct file * fd)
 {
@@ -705,8 +673,6 @@ static int rtcomm_open(struct inode * inode, struct file * fd)
         return (0);
 }
 
-
-
 static int rtcomm_release(struct inode * inode, struct file * fd)
 {
         struct rtcomm_state *   state = state_from_fd(fd);
@@ -720,8 +686,6 @@ static int rtcomm_release(struct inode * inode, struct file * fd)
 
         return (0);
 }
-
-
 
 static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
 {
@@ -841,7 +805,6 @@ static long rtcomm_ioctl(struct file * fd, unsigned int cmd, unsigned long arg)
         return (retval);
 }
 
-
 /*--  Module initialization  -------------------------------------------------*/
 
 static int __init rtcomm_init(void)
@@ -866,7 +829,7 @@ FAIL_REGISTER_MISC:
         return (ret);
 }
 
-
+/*--  Module termination -----------------------------------------------------*/
 
 static void __exit rtcomm_exit(void)
 {
@@ -874,6 +837,8 @@ static void __exit rtcomm_exit(void)
 
         misc_deregister(&g_rtcomm_miscdev);
 }
+
+/*--  Module setup -----------------------------------------------------------*/
 
 module_init(rtcomm_init);
 module_exit(rtcomm_exit);
