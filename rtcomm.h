@@ -21,4 +21,14 @@
 
 #define RTCOMM_TERM                     _IO(RTCOMM_IOC_MAGIC, 4)
 
+struct rtcomm_packet
+{
+    struct rtcomm_packet_header
+    {
+        uint64_t                    tv_sec;
+        uint32_t                    tv_msec;
+    }                           header;
+    uint8_t                     data[0];
+};
+
 #endif /* NETICO_RTCOMM_IOCTL_ */

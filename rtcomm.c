@@ -41,6 +41,12 @@
 #define LOG_LEVEL_INF                   3
 #define LOG_LEVEL_DBG                   4
 
+#define WARN_SKIP_READ_RTFW_BUFF        0
+#define WARN_SKIP_READ_FIFO_BUFF        1
+#define WARN_SKIP_READ_RTFW_BUFF_MASK        (0x1u << WARN_SKIP_READ_RTFW_BUFF)
+#define WARN_SKIP_READ_FIFO_BUFF_MASK        (0x1u << WARN_SKIP_READ_FIFO_BUFF)
+
+
 #define RTCOMM_ERR(msg, ...)                                                    \
 printk(KERN_ERR RTCOMM_NAME " error: " msg, ## __VA_ARGS__);    
 
@@ -106,9 +112,13 @@ struct rtcomm_state
 
         struct rtcomm_perf
         {
-                uint32_t                skip_read_data_buff;
+                volatile long unsigned int skip_read_rtfw_buff;
+                volatile long unsigned int skip_read_fifo_buff;
+                volatile long unsigned int warned;
         }                       perf;              
 };
+
+
 
 struct fifo_buff
 {
@@ -285,16 +295,17 @@ static int fifo_buff_put(struct fifo_buff * fifo_buff, void * storage)
 {
         int status;
         
-        status = down_interruptible(&fifo_buff->spaces);
+        status = down_trylock(&fifo_buff->spaces);
         
-        if (status == -EINTR) {
-                RTCOMM_DBG("fifo_buff: put(): interrupted\n");
+        if (status != 0) {
+                status = -ENOMEM;
                 goto ERR_EINTR_SPACES;
         }
         status = mutex_lock_interruptible(&fifo_buff->mutex);
         
         if (status == -EINTR) {
                 RTCOMM_DBG("fifo_buff: put(): interrupted\n");
+                status = -EINTR;
                 goto ERR_EINTR_MUTEX;
         }
         /* --- Put item --- */
@@ -311,7 +322,9 @@ static int fifo_buff_put(struct fifo_buff * fifo_buff, void * storage)
         return (0);
 ERR_EINTR_MUTEX:
 ERR_EINTR_SPACES:
-        return (-EINTR);
+        kfree(storage);
+        
+        return (status);
 }
 
 static uint32_t fifo_buff_package_size(struct fifo_buff * fifo_buff)
@@ -564,6 +577,7 @@ static int rtcomm_fifo(void * data)
         spi_bus_lock(state->spi->master);
         
         for (;;) {
+                clear_bit(WARN_SKIP_READ_RTFW_BUFF, &state->perf.warned);
                 state->is_read_pending = false;
                 wait_for_completion(&state->isr_signal);
                 state->is_read_pending = true;
@@ -571,8 +585,8 @@ static int rtcomm_fifo(void * data)
                 if (state->should_exit) {
                         break;                        
                 }
-                packet = fifo_buff_create(state->fifo_buff);
                 do_gettimeofday(&timeval);
+                packet = fifo_buff_create(state->fifo_buff);
                 packet->header.tv_sec = timeval.tv_sec;
                 packet->header.tv_msec = timeval.tv_usec / 1000;
                 memset(&transfer, 0, sizeof(transfer));
@@ -582,8 +596,39 @@ static int rtcomm_fifo(void * data)
                 spi_message_add_tail(&transfer, &message);
                 spi_sync_locked(state->spi, &message);
                 
-                if (fifo_buff_put(state->fifo_buff, packet)) {
-                        break;
+                retval = fifo_buff_put(state->fifo_buff, packet);
+                
+                switch (retval) {
+                        case 0: {
+                                if (state->perf.warned & 
+                                        WARN_SKIP_READ_FIFO_BUFF_MASK) {
+                                        RTCOMM_WRN("reading of FIFO resumed, "
+                                                "skipped %lu time(s)\n",
+                                                state->perf.skip_read_fifo_buff);
+                                }
+                                state->perf.warned &= 
+                                        ~WARN_SKIP_READ_FIFO_BUFF_MASK;
+                                break;
+                        }
+                        case -ENOMEM: {
+                                state->perf.skip_read_fifo_buff++;
+                                
+                                if (!(state->perf.warned &
+                                        WARN_SKIP_READ_FIFO_BUFF_MASK)) {
+                                        RTCOMM_WRN("reading of FIFO skip\n");
+                                }
+                                state->perf.warned |= 
+                                        WARN_SKIP_READ_FIFO_BUFF_MASK;
+                                break;
+                        }
+                        case -EINTR: {
+                                break;
+                        }
+                        default: {
+                                RTCOMM_WRN(
+                                    "rtcomm_fifo(): unknown error in FIFO\n");
+                                break;
+                        }
                 }
         }
         spi_bus_unlock(state->spi->master);
@@ -601,9 +646,13 @@ static irqreturn_t trigger_notify_handler(int irq, void * p)
         struct rtcomm_state *   state = &g_state;
 
         if (state->is_read_pending) {
-                state->perf.skip_read_data_buff++;
-                RTCOMM_ERR("data read buffer skipped: %d time(s)\n",
-                        state->perf.skip_read_data_buff);
+                state->perf.skip_read_rtfw_buff++;
+                
+                if (!(state->perf.warned & WARN_SKIP_READ_RTFW_BUFF_MASK)) {
+                        RTCOMM_ERR("reading of RT firmware skipped: %lu time(s)\n",
+                                state->perf.skip_read_rtfw_buff);
+                }
+                state->perf.warned |= WARN_SKIP_READ_RTFW_BUFF_MASK;
         }
         complete(&state->isr_signal);
 
