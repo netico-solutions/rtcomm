@@ -32,7 +32,7 @@
 #define RTCOMM_LOG_LEVEL                LOG_LEVEL_WRN
 #define RTCOMM_BUILD_TIME               "12:00"
 #define RTCOMM_BUILD_DATE               "2017-06-10"
-#define RTCOMM_BUILD_VER                "v1.2"
+#define RTCOMM_BUILD_VER                "v1.3"
 #define RTCOMM_VERSION                  RTCOMM_BUILD_VER " - " RTCOMM_BUILD_DATE
 
 #define LOG_LEVEL_ERR                   0
