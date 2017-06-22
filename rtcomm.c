@@ -30,9 +30,9 @@
 #include "rtcomm.h"
 
 #define RTCOMM_LOG_LEVEL                LOG_LEVEL_WRN
-#define RTCOMM_BUILD_TIME               "12:00"
-#define RTCOMM_BUILD_DATE               "2017-06-10"
-#define RTCOMM_BUILD_VER                "v1.3"
+#define RTCOMM_BUILD_TIME               "15:18"
+#define RTCOMM_BUILD_DATE               "2017-06-22"
+#define RTCOMM_BUILD_VER                GIT_COMMIT
 #define RTCOMM_VERSION                  RTCOMM_BUILD_VER " - " RTCOMM_BUILD_DATE
 
 #define LOG_LEVEL_ERR                   0
@@ -241,8 +241,31 @@ ERR_MALLOC_FIFO_BUFF:
 
 static void fifo_buff_term(struct fifo_buff * fifo_buff)
 {
+        int status;
+        status = mutex_lock_interruptible(&fifo_buff->mutex);
+
+        if (status == -EINTR) {
+                goto ERR_EINTR_MUTEX;
+        }
+        while (fifo_buff->free != fifo_buff->size) {
+                void *                      tmp;
+
+                tmp = fifo_buff->storage[fifo_buff->tail++];
+
+                if (fifo_buff->tail == fifo_buff->size) {
+                    fifo_buff->tail = 0u;
+                }
+                fifo_buff->free++;
+
+                kfree(tmp);
+        }
         kfree(fifo_buff->storage);
+        mutex_unlock(&fifo_buff->mutex);
         kfree(fifo_buff);
+ERR_EINTR_MUTEX:
+        RTCOMM_ERR("fifo_buff: term(): interrupted\n");
+        
+        return;
 }
 
 static void * fifo_buff_create(struct fifo_buff * fifo_buff)
@@ -715,6 +738,8 @@ static int rtcomm_open(struct inode * inode, struct file * fd)
         state_to_fd(fd, state);
 
         if (state->is_busy) {
+                RTCOMM_WRN("open(): is busy %d:%d\n", current->group_leader->pid, 
+                        current->pid);
                 return (-EBUSY);
         }
         state->is_busy = true;

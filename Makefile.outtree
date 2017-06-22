@@ -5,15 +5,19 @@
 #
 obj-m += rtcomm.o
 
+GIT_COMMIT := $(shell git describe --abbrev=7 --always --dirty --tags)
+ccflags-y := -DGIT_COMMIT=\"$(GIT_COMMIT)\"
 
 all: 
-	make ARCH=arm CROSS_COMPILE=arm-eabih- -C $(LINUX_SRC) M=$(PWD) modules
+	make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -C $(URTU_KERNEL) M=$(PWD) modules
 
 clean:
-	make ARCH=arm CROSS_COMPILE=arm-eabih- -C $(LINUX_SRC) M=$(PWD) clean
+	make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -C $(URTU_KERNEL) M=$(PWD) clean
 
+deploy: all 
+	@scp rtcomm.ko root@netico-urtu:
 
-ifndef URTU_LINUX_SRC
+ifndef URTU_KERNEL
 	$(error LINUX_SRC variable is not set)
 endif
 
